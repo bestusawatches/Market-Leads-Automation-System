@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pgdata:/var/lib/postgresql/data 
+    ports:
+      - 5432:5432
+ 
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 3001:8080
+  redis:
+    image: redis:7
+    restart: always
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

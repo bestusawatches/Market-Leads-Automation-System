@@ -1,27 +1,37 @@
 {
   "name": "real-estate-scraper",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Off-market real estate leads automation system",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc",
+    "dev": "ts-node index.ts",
     "start": "node dist/index.js",
-    "dev": "ts-node-dev --respawn --transpile-only index.ts",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev --name init"
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:studio": "prisma studio",
+    "scrape": "ts-node index.ts",
+    "scrape:craigslist": "ts-node index.ts --source craigslist",
+    "scrape:zillow": "ts-node index.ts --source zillow",
+    "scrape:all": "ts-node index.ts --source all"
   },
   "dependencies": {
-    "@prisma/client": "latest",
-    "dotenv": "^16.0.0",
-    "playwright": "^1.38.0",
-    "winston": "^3.8.2"
+    "@prisma/client": "^5.13.0",
+    "cheerio": "^1.0.0-rc.12",
+    "playwright": "^1.43.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "winston": "^3.13.0",
+    "yargs": "^17.7.2",
+    "axios": "^1.6.8",
+    "p-retry": "^6.2.0",
+    "p-limit": "^5.0.0"
   },
   "devDependencies": {
-    "prisma": "latest",
-    "typescript": "^5.1.6",
-    "ts-node": "^10.9.1",
-    "ts-node-dev": "^2.0.0",
-    "@types/node": "^18.0.0",
-    "@types/winston": "^2.4.4"
+    "@types/node": "^20.12.7",
+    "@types/yargs": "^17.0.32",
+    "prisma": "^5.13.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
   }
 }

@@ -1,22 +1,59 @@
+// prisma/schema.prisma
+// Run: npx prisma migrate dev --name init
+
 generator client {
   provider = "prisma-client-js"
+  engineType = "binary"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url            = env("DATABASE_URL")
+  shadowDatabaseUrl = env("DEV_SHADOW_DATABASE_URL")
 }
 
 model Listing {
-  id         Int      @id @default(autoincrement())
-  source     String
-  externalId String
-  title      String?
-  price      Int?
-  url        String
-  raw        Json?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id          String   @id @default(cuid())
 
-  @@unique([source, externalId])
+  // ── identity (used for deduplication) ───────────────────────────────────
+  url         String   @unique
+  source      String   // "craigslist" | "zillow" | "realtor" | etc.
+
+  // ── core fields ──────────────────────────────────────────────────────────
+  title       String?
+  price       Int?
+  address     String?
+  location    String?
+  propertyType String?  // "single_family" | "multi_family" | "duplex"
+
+  // ── property details ─────────────────────────────────────────────────────
+  bedrooms    Int?
+  bathrooms   Float?
+  squareFeet  Int?
+  description String?
+  postedDate  DateTime?
+
+  // ── enrichment (filled by enrichment pipeline) ───────────────────────────
+  zestimate        Int?
+  realtorEstimate  Int?
+  redfinEstimate   Int?
+
+  // ── underwriting ─────────────────────────────────────────────────────────
+  // "good_deal" | "average_deal" | "low_potential" | null (not yet scored)
+  dealScore   String?
+  equityEstimate Int?   // zestimate - price
+
+  // ── owner contact (from third-party enrichment) ──────────────────────────
+  ownerName   String?
+  ownerPhone  String?
+
+  // ── meta ──────────────────────────────────────────────────────────────────
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime @default(now())
+
+  @@index([source])
+  @@index([price])
+  @@index([location])
+  @@index([dealScore])
 }

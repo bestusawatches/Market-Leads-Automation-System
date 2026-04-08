@@ -24,16 +24,23 @@ export interface RawListing {
   address?: string;
   location?: string;
   propertyType?: PropertyType;
+  postedDate?: Date;
+  description?: string;
 
   bedrooms?: number;
   bathrooms?: number;
   squareFeet?: number;
-  description?: string;
-  postedDate?: Date;
 
-  // Zillow-specific extras (carried through so they land in the DB)
+  // Owner contact (when present in the post)
+  ownerName?: string;
+  ownerPhone?: string;
+
+  // Enrichment fields (zillow/realtor/redfin/propwire)
   zestimate?: number;
   zpid?: string;
+  realtorEstimate?: number;
+  redfinEstimate?: number;
+  propwireEstimate?: number;
 }
 
 /** Underwriting result computed by the scoring engine */

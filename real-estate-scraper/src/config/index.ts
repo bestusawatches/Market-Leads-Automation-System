@@ -31,7 +31,7 @@ export const config = {
   // ── Proxy ──────────────────────────────────────────────────────────────────
   // Set to null to scrape without a proxy (recommended for initial testing).
   // Format: "http://user:pass@host:port"
-  proxyUrl: process.env.PROXY_URL ?? null,
+  proxyUrl: "http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/",
 
   // ── Scraping limits ────────────────────────────────────────────────────────
   maxPages: Number(process.env.MAX_PAGES ?? 5),

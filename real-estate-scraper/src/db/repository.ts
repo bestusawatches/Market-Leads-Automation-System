@@ -18,7 +18,7 @@ import { logger } from "../utils/logger";
  * New listings are inserted with `createdAt = now`.
  */
 export async function upsertListing(
-  payload: ListingUpsertPayload
+  payload: ListingUpsertPayload,
 ): Promise<Listing> {
   const data: Prisma.ListingCreateInput = {
     url: payload.url,
@@ -57,11 +57,8 @@ export async function upsertListing(
  * Returns counts of created vs updated records.
  */
 export async function upsertMany(
-  payloads: ListingUpsertPayload[]
+  payloads: ListingUpsertPayload[],
 ): Promise<{ created: number; updated: number }> {
-  let created = 0;
-  let updated = 0;
-
   await prisma.$transaction(
     payloads.map((p) =>
       prisma.listing.upsert({
@@ -74,17 +71,26 @@ export async function upsertMany(
           address: p.address,
           location: p.location,
           propertyType: p.propertyType,
+          postedDate: p.postedDate,
           bedrooms: p.bedrooms,
           bathrooms: p.bathrooms,
           squareFeet: p.squareFeet,
           description: p.description,
-          postedDate: p.postedDate,
+          // §3.2 — owner contact
+          ownerName: p.ownerName,
+          ownerPhone: p.ownerPhone,
+          // §3.3 — enrichment
           zestimate: p.zestimate,
+          realtorEstimate: p.realtorEstimate,
+          redfinEstimate: p.redfinEstimate,
+          propwireEstimate: p.propwireEstimate,
+          // §3.5 — underwriting
           dealScore: p.dealScore,
           equityEstimate: p.equityEstimate,
           lastSeenAt: new Date(),
         },
         update: {
+          // Always refresh mutable fields
           price: p.price,
           title: p.title,
           address: p.address,
@@ -97,13 +103,23 @@ export async function upsertMany(
           dealScore: p.dealScore,
           equityEstimate: p.equityEstimate,
           lastSeenAt: new Date(),
+          // Owner contact: update only if we found something new
+          ...(p.ownerName ? { ownerName: p.ownerName } : {}),
+          ...(p.ownerPhone ? { ownerPhone: p.ownerPhone } : {}),
+          // Enrichment: never overwrite existing estimates with null
+          ...(p.zestimate ? { zestimate: p.zestimate } : {}),
+          ...(p.realtorEstimate ? { realtorEstimate: p.realtorEstimate } : {}),
+          ...(p.redfinEstimate ? { redfinEstimate: p.redfinEstimate } : {}),
+          ...(p.propwireEstimate
+            ? { propwireEstimate: p.propwireEstimate }
+            : {}),
         },
-      })
-    )
+      }),
+    ),
   );
 
   logger.info(`[db] Upserted ${payloads.length} listings`);
-  return { created, updated };
+  return { created: 0, updated: 0 }; // Prisma doesn't expose create/update counts in upsert
 }
 
 // ── Read ──────────────────────────────────────────────────────────────────────
@@ -120,12 +136,13 @@ export interface ListingFilters {
 /** Fetch listings with optional filters — used by dashboard/export */
 export async function getListings(
   filters: ListingFilters = {},
-  limit = 500
+  limit = 500,
 ): Promise<Listing[]> {
   const where: Prisma.ListingWhereInput = {};
 
   if (filters.source) where.source = { contains: filters.source };
-  if (filters.location) where.location = { contains: filters.location, mode: "insensitive" };
+  if (filters.location)
+    where.location = { contains: filters.location, mode: "insensitive" };
   if (filters.dealScore) where.dealScore = filters.dealScore;
   if (filters.propertyType) where.propertyType = filters.propertyType;
   if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
@@ -161,7 +178,7 @@ export async function getExistingUrls(source: string): Promise<Set<string>> {
 export async function updateDealScore(
   url: string,
   dealScore: string,
-  equityEstimate?: number
+  equityEstimate?: number,
 ): Promise<void> {
   await prisma.listing.update({
     where: { url },
@@ -186,7 +203,7 @@ export async function getSummaryStats(): Promise<{
     total,
     bySource: Object.fromEntries(bySrc.map((r) => [r.source, r._count])),
     byDealScore: Object.fromEntries(
-      byScore.map((r) => [r.dealScore ?? "unscored", r._count])
+      byScore.map((r) => [r.dealScore ?? "unscored", r._count]),
     ),
   };
 }

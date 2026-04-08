@@ -117,12 +117,11 @@ export class CraigslistScraper extends BaseScraper {
           );
         }
 
+        const itemFields = item;
         enriched.push({
-          source: this.sourceName,
-          ...item,
           ...detail,
-          // Don't overwrite fields already set by the search parser
-          ...(item as RawListing),
+          ...itemFields,
+          source: this.sourceName,
         });
 
         await sleep(800 + Math.random() * 1200); // polite inter-detail delay

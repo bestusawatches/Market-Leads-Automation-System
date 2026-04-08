@@ -1,17 +1,9 @@
-// src/utils/browser.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Centralised Playwright browser factory.
-// Every scraper calls `createBrowser()` and gets a fully-configured instance
-// with stealth, proxy, and realistic headers already applied.
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { Browser, BrowserContext, Page, chromium } from "playwright";
 import { config } from "../config";
 import { logger } from "./logger";
 
-/** Parse "http://user:pass@host:port" into a Playwright proxy object */
 function parseProxy(
-  proxyUrl: string | null
+  proxyUrl: string | null,
 ): { server: string; username?: string; password?: string } | undefined {
   if (!proxyUrl) return undefined;
   const m = proxyUrl.match(/^https?:\/\/([^:]+):([^@]+)@(.+)$/);
@@ -22,7 +14,6 @@ function parseProxy(
   return { server: proxyUrl };
 }
 
-/** Minimal stealth init script — applied when playwright-extra isn't available */
 const STEALTH_SCRIPT = `
   Object.defineProperty(navigator, 'webdriver', { get: () => false });
   Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] });
@@ -35,18 +26,16 @@ const STEALTH_SCRIPT = `
 export interface BrowserHandle {
   browser: Browser;
   context: BrowserContext;
-  /** Create a new stealth-patched page inside the shared context */
   newPage(): Promise<Page>;
   close(): Promise<void>;
 }
 
-/**
- * Create a browser instance shared across all pages in one scrape run.
- * Call `handle.close()` when finished.
- */
 export async function createBrowser(): Promise<BrowserHandle> {
   const proxy = parseProxy(config.proxyUrl);
+  const executablePath =
+    process.env.PLAYWRIGHT_CHROMIUM_PATH || "/usr/bin/chromium-browser";
 
+  logger.info(`[browser] Using executable: ${executablePath}`);
   if (proxy) {
     logger.info(`[browser] Using proxy: ${proxy.server}`);
   } else {
@@ -54,7 +43,15 @@ export async function createBrowser(): Promise<BrowserHandle> {
   }
 
   const browser = await chromium.launch({
+    executablePath,
     headless: config.browser.headless,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+    ],
     ...(proxy ? { proxy } : {}),
   });
 
@@ -84,12 +81,10 @@ export async function createBrowser(): Promise<BrowserHandle> {
   };
 }
 
-/** Sleep helper used by scrapers between requests */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Random jitter within ±jitterMs of base */
 export function jitter(baseMs: number, jitterMs = 2000): number {
   return baseMs + Math.random() * jitterMs;
 }

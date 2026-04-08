@@ -10,22 +10,24 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
-    "scrape": "ts-node index.ts",
-    "scrape:craigslist": "ts-node index.ts --source craigslist",
-    "scrape:zillow": "ts-node index.ts --source zillow",
-    "scrape:all": "ts-node index.ts --source all"
+   "scrape": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts",
+  "scrape:craigslist": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source craigslist",
+  "scrape:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source zillow",
+  "scrape:all": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source all"
+
   },
   "dependencies": {
     "@prisma/client": "^5.13.0",
+    "axios": "^1.6.8",
     "cheerio": "^1.0.0-rc.12",
+    "fetch-blob": "^4.0.0",
+    "p-limit": "^5.0.0",
+    "p-retry": "^6.2.0",
     "playwright": "^1.43.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "winston": "^3.13.0",
-    "yargs": "^17.7.2",
-    "axios": "^1.6.8",
-    "p-retry": "^6.2.0",
-    "p-limit": "^5.0.0"
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",

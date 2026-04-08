@@ -9,51 +9,54 @@ generator client {
 datasource db {
   provider          = "postgresql"
   url            = env("DATABASE_URL")
-  shadowDatabaseUrl = env("DEV_SHADOW_DATABASE_URL")
+  // shadowDatabaseUrl = env("DEV_SHADOW_DATABASE_URL")
 }
 
 model Listing {
   id          String   @id @default(cuid())
 
-  // ── identity (used for deduplication) ───────────────────────────────────
+  // ── Identity (used for deduplication) ───────────────────────────────────
   url         String   @unique
-  source      String   // "craigslist" | "zillow" | "realtor" | etc.
+  source      String   // "craigslist_milwaukee" | "zillow" | "realtor" | etc.
 
-  // ── core fields ──────────────────────────────────────────────────────────
-  title       String?
-  price       Int?
-  address     String?
-  location    String?
-  propertyType String?  // "single_family" | "multi_family" | "duplex"
+  // ── §3.2 — Core data extraction fields ───────────────────────────────────
+  title        String?
+  price        Int?
+  address      String?
+  location     String?
+  propertyType String?   // "single_family" | "multi_family" | "duplex" | etc.
+  postedDate   DateTime? // listing date
+  description  String?
 
-  // ── property details ─────────────────────────────────────────────────────
+  // ── §3.2 — Property details ───────────────────────────────────────────────
   bedrooms    Int?
   bathrooms   Float?
   squareFeet  Int?
-  description String?
-  postedDate  DateTime?
 
-  // ── enrichment (filled by enrichment pipeline) ───────────────────────────
-  zestimate        Int?
-  realtorEstimate  Int?
-  redfinEstimate   Int?
-
-  // ── underwriting ─────────────────────────────────────────────────────────
-  // "good_deal" | "average_deal" | "low_potential" | null (not yet scored)
-  dealScore   String?
-  equityEstimate Int?   // zestimate - price
-
-  // ── owner contact (from third-party enrichment) ──────────────────────────
+  // ── §3.2 — Owner contact (extracted from post body where available) ───────
   ownerName   String?
   ownerPhone  String?
 
-  // ── meta ──────────────────────────────────────────────────────────────────
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  lastSeenAt  DateTime @default(now())
+  // ── §3.3 — Data enrichment (filled by enrichment pipeline) ───────────────
+  zestimate        Int?  // Zillow estimate
+  realtorEstimate  Int?  // Realtor.com estimate
+  redfinEstimate   Int?  // Redfin estimate
+  propwireEstimate Int?  // Propwire estimate
+
+  // ── §3.5 — Underwriting ───────────────────────────────────────────────────
+  // "good_deal" | "average_deal" | "low_potential" | null (not yet scored)
+  dealScore      String?
+  equityEstimate Int?    // ARV - price (calculated from best available estimate)
+
+  // ── Meta ──────────────────────────────────────────────────────────────────
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastSeenAt DateTime @default(now())
 
   @@index([source])
   @@index([price])
   @@index([location])
   @@index([dealScore])
+  @@index([propertyType])
+  @@index([ownerPhone])  // quick lookup for CRM deduplication
 }

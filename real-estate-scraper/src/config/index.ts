@@ -31,8 +31,11 @@ export const config = {
   // ── Proxy ──────────────────────────────────────────────────────────────────
   // Set to null to scrape without a proxy (recommended for initial testing).
   // Format: "http://user:pass@host:port"
-  proxyUrl: "http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/",
+  // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/
 
+  proxyUrl: "http://uiqydusn:ayprrg8k3u13@45.38.107.97:6014/" ,
+
+  // https://ipv4.webshare.io/
   // ── Scraping limits ────────────────────────────────────────────────────────
   maxPages: Number(process.env.MAX_PAGES ?? 5),
   maxListings: Number(process.env.MAX_LISTINGS ?? 20),

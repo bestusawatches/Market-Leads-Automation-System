@@ -10,11 +10,11 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
-   "scrape": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts",
-  "scrape:craigslist": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source craigslist",
-  "scrape:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source zillow",
-  "scrape:all": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source all"
-
+    "scrape": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts",
+    "scrape:craigslist": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source craigslist",
+    "scrape:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source zillow",
+    "scrape:all": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source all",
+    "scrape:investorlift": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source investorlift"
   },
   "dependencies": {
     "@prisma/client": "^5.13.0",

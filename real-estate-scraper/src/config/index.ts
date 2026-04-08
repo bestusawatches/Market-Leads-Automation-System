@@ -33,7 +33,7 @@ export const config = {
   // Format: "http://user:pass@host:port"
   // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/
 
-  proxyUrl: "http://uiqydusn:ayprrg8k3u13@45.38.107.97:6014/" ,
+  proxyUrl: null,
 
   // https://ipv4.webshare.io/
   // ── Scraping limits ────────────────────────────────────────────────────────

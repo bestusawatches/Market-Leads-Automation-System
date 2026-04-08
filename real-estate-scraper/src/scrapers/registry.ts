@@ -10,12 +10,16 @@
 import { BaseScraper } from "./base.scraper";
 import { CraigslistScraper } from "./craigslist/craigslist.scraper";
 import { ZillowScraper } from "./zillow/zillow.scraper";
+import { InvestorLiftScraper } from "./investorlift/investorlift.scraper";
 import { config } from "../config";
 
 /** Each entry returns a ready-to-run BaseScraper instance */
 export type ScraperFactory = () => BaseScraper;
 
 export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
+  // ── InvestorLift (highest priority per project doc §3.1) ─────────────────
+  investorlift: () => new InvestorLiftScraper(),
+
   // ── Craigslist cities ─────────────────────────────────────────────────────
   craigslist_milwaukee: () =>
     new CraigslistScraper(config.sources.craigslist.milwaukee),
@@ -31,32 +35,30 @@ export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
 
   // ── Zillow ────────────────────────────────────────────────────────────────
   zillow: () => new ZillowScraper(config.sources.zillow),
-
-  // ── Groups ────────────────────────────────────────────────────────────────
-  /** Alias: run all Craigslist cities at once */
-  craigslist: () => {
-    throw new Error(
-      'Use source "craigslist_milwaukee", "craigslist_columbus" etc., or source "all"'
-    );
-  },
 };
 
-/** Expand "all" into every registered key (excluding group aliases) */
+// ── Source group aliases ──────────────────────────────────────────────────────
+
+const ALIASES: Record<string, string[]> = {
+  // "craigslist" runs all CL cities at once
+  craigslist: Object.keys(SCRAPER_REGISTRY).filter((k) =>
+    k.startsWith("craigslist_"),
+  ),
+  // "all" runs every registered scraper
+  all: Object.keys(SCRAPER_REGISTRY),
+};
+
+/** Expand a source name or alias into concrete registry keys */
 export function resolveSourceKeys(source: string): string[] {
-  if (source === "all") {
-    return Object.keys(SCRAPER_REGISTRY).filter(
-      (k) => k !== "craigslist" // exclude the alias
-    );
-  }
-  if (source.startsWith("craigslist") && source === "craigslist") {
-    return Object.keys(SCRAPER_REGISTRY).filter((k) =>
-      k.startsWith("craigslist_")
-    );
-  }
+  if (ALIASES[source]) return ALIASES[source];
+
   if (!SCRAPER_REGISTRY[source]) {
-    throw new Error(
-      `Unknown source "${source}". Available: ${Object.keys(SCRAPER_REGISTRY).join(", ")}`
-    );
+    const available = [
+      ...Object.keys(SCRAPER_REGISTRY),
+      ...Object.keys(ALIASES),
+    ].join(", ");
+    throw new Error(`Unknown source "${source}". Available: ${available}`);
   }
+
   return [source];
 }

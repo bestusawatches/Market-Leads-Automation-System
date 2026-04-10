@@ -32,8 +32,12 @@ export const config = {
   // Set to null to scrape without a proxy (recommended for initial testing).
   // Format: "http://user:pass@host:port"
   // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/
+  
 
-  proxyUrl: null,
+  // proxyUrl: "http://uiqydusn:ayprrg8k3u13@198.105.121.200:6462",
+  proxyUrl: "http://uiqydusn:ayprrg8k3u13@107.172.163.27:6543/",
+  // proxyUrl: "http://uiqydusn:ayprrg8k3u13@216.10.27.159:6837/",
+  // proxyUrl:"",
 
   // https://ipv4.webshare.io/
   // ── Scraping limits ────────────────────────────────────────────────────────

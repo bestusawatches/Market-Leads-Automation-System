@@ -54,106 +54,125 @@ function buildDetailUrl(listingId: string | number): string {
  * ⚠️  InvestorLift may change their API shape — check logs/investorlift_api_*.json
  *     if parsing breaks.
  */
-export function parseApiResponse(
-  json: unknown,
-  source: string
-): RawListing[] {
-  if (!json || typeof json !== "object") {
-    logger.warn("[il-parser] API response is not an object");
-    return [];
-  }
-
-  // Handle both { data: [...] } and bare array responses
-  const raw = json as Record<string, unknown>;
-  const items: unknown[] = Array.isArray(raw)
-    ? raw
-    : Array.isArray(raw["data"])
-    ? (raw["data"] as unknown[])
-    : Array.isArray(raw["properties"])
-    ? (raw["properties"] as unknown[])
-    : Array.isArray(raw["results"])
-    ? (raw["results"] as unknown[])
-    : [];
-
+// Original object-per-row path, preserved as fallback
+function mapObjectItems(items: any[], source: string): RawListing[] {
   if (items.length === 0) {
-    logger.warn(
-      `[il-parser] Could not find listings array in API response. Keys: ${Object.keys(raw).join(", ")}`
-    );
+    logger.warn("[il-parser] No items found in API response");
     return [];
   }
-
   logger.debug(`[il-parser] API returned ${items.length} raw items`);
 
   return items
-    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
-    .map((item): RawListing => {
-      const id = item["id"] ?? item["listing_id"] ?? item["property_id"];
-      const url = id
-        ? buildDetailUrl(String(id))
-        : String(item["url"] ?? item["link"] ?? "");
+    .map((item): RawListing | null => {
+      try {
+        const id = item.id;
+        const price = item.price;
+        if (!id || !price) return null;
 
-      // Address assembly
-      const street =
-        item["address"] ?? item["street_address"] ?? item["street"] ?? "";
-      const city = item["city"] ?? item["city_name"] ?? "";
-      const state = item["state"] ?? item["state_code"] ?? "";
-      const zip = item["zip"] ?? item["zipcode"] ?? item["postal_code"] ?? "";
-      const address = [street, city, state, zip]
-        .map((p) => String(p).trim())
-        .filter(Boolean)
-        .join(", ");
+        const address = [item.city, item.county, item.state_code, item.zip]
+          .filter(Boolean)
+          .join(", ");
 
-      const location = [city, state]
-        .map((p) => String(p).trim())
-        .filter(Boolean)
-        .join(", ");
+        return {
+          source,
+          url: `https://investorlift.com/marketplace/deal/${id}`,
+          title: item.title || address,
+          address,
+          price: Number(price),
+          bedrooms:   item.bedrooms   != null ? Number(item.bedrooms)   : undefined,
+          bathrooms:  item.bathrooms  != null ? Number(item.bathrooms)  : undefined,
+          squareFeet: item.sq_footage != null ? Number(item.sq_footage) : undefined,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean) as RawListing[];
+}
 
-      // Date
-      const dateRaw =
-        item["listed_at"] ??
-        item["created_at"] ??
-        item["posted_at"] ??
-        item["list_date"];
-      const postedDate = dateRaw ? new Date(String(dateRaw)) : undefined;
+export function parseApiResponse(json: unknown, source: string): RawListing[] {
+  if (!json) return [];
 
-      return {
-        url,
-        source,
-        title: address || undefined,
-        address: address || undefined,
-        location: location || undefined,
-        price: normalizePrice(item["price"] ?? item["list_price"] ?? item["asking_price"]),
-        propertyType: normalizePropertyType(
-          item["property_type"] ?? item["type"] ?? item["home_type"]
-        ),
-        bedrooms:
-          item["beds"] != null ? Number(item["beds"]) : undefined,
-        bathrooms:
-          item["baths"] != null ? Number(item["baths"]) : undefined,
-        squareFeet:
-          item["sqft"] != null
-            ? Number(String(item["sqft"]).replace(/,/g, ""))
-            : undefined,
-        description: item["description"]
-          ? String(item["description"])
-          : undefined,
-        postedDate,
-        // Owner contact — InvestorLift sometimes exposes these directly
-        ownerName: item["owner_name"]
-          ? String(item["owner_name"])
-          : undefined,
-        ownerPhone:
-          item["owner_phone"] ?? item["seller_phone"] ?? item["contact_phone"]
-            ? String(
-                item["owner_phone"] ??
-                  item["seller_phone"] ??
-                  item["contact_phone"]
-              )
-            : undefined,
-        zestimate:
-          item["zestimate"] != null ? Number(item["zestimate"]) : undefined,
-      };
-    });
+  let columns: string[] = [];
+  let rows: any[][] = [];
+
+  if (typeof json === "object" && !Array.isArray(json)) {
+    const raw = json as Record<string, unknown>;
+
+    // Columnar format: { columns: [...], data: [[...], ...], meta: {...} }
+    if (Array.isArray(raw.columns) && Array.isArray(raw.data)) {
+      columns = raw.columns as string[];
+      rows = raw.data as any[][];
+    }
+    // Fallback: array of objects
+    else if (Array.isArray(raw.data)) {
+      const items = raw.data as any[];
+      return mapObjectItems(items, source);
+    } else if (Array.isArray(raw.results)) {
+      return mapObjectItems(raw.results as any[], source);
+    } else if (Array.isArray(raw.properties)) {
+      return mapObjectItems(raw.properties as any[], source);
+    } else {
+      for (const key of Object.keys(raw)) {
+        if (Array.isArray(raw[key])) {
+          return mapObjectItems(raw[key] as any[], source);
+        }
+      }
+    }
+  } else if (Array.isArray(json)) {
+    return mapObjectItems(json, source);
+  }
+
+  if (rows.length === 0) {
+    logger.warn("[il-parser] No items found in API response");
+    return [];
+  }
+
+  logger.debug(`[il-parser] API returned ${rows.length} raw items`);
+
+  // Convert columnar rows → objects, then map
+  const col = (name: string) => columns.indexOf(name);
+
+  return rows
+    .map((row): RawListing | null => {
+      try {
+        const id = row[col("id")];
+        const price = row[col("price")];
+        if (!id || price == null) return null;
+
+        const city = row[col("city")] ?? "";
+        const county = row[col("county")] ?? "";
+        const stateCode = row[col("state_code")] ?? "";
+        const zip = row[col("zip")] ?? "";
+
+        const address = [city, county, stateCode, zip]
+          .filter(Boolean)
+          .join(", ");
+
+        return {
+          source,
+          url: `https://investorlift.com/marketplace/deal/${id}`,
+          title: row[col("title")] || address,
+          address,
+          price: Number(price),
+          bedrooms:
+            row[col("bedrooms")] != null
+              ? Number(row[col("bedrooms")])
+              : undefined,
+          bathrooms:
+            row[col("bathrooms")] != null
+              ? Number(row[col("bathrooms")])
+              : undefined,
+          squareFeet:
+            row[col("sq_footage")] != null
+              ? Number(row[col("sq_footage")])
+              : undefined,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean) as RawListing[];
 }
 
 // ── DOM fallback parser ────────────────────────────────────────────────────
@@ -184,13 +203,17 @@ export function parseDomListings(html: string, source: string): RawListing[] {
   for (const sel of cardSelectors) {
     cards = $(sel);
     if (cards.length > 0) {
-      logger.debug(`[il-parser] DOM: found ${cards.length} cards with selector "${sel}"`);
+      logger.debug(
+        `[il-parser] DOM: found ${cards.length} cards with selector "${sel}"`,
+      );
       break;
     }
   }
 
   if (cards.length === 0) {
-    logger.warn("[il-parser] DOM fallback: no property cards found — check selectors");
+    logger.warn(
+      "[il-parser] DOM fallback: no property cards found — check selectors",
+    );
     return [];
   }
 
@@ -198,29 +221,40 @@ export function parseDomListings(html: string, source: string): RawListing[] {
     const card = $(el);
 
     // URL — look for a link with a property path
-    const anchor = card.find("a[href*='/properties/'], a[href*='/listing/']").first();
+    const anchor = card
+      .find("a[href*='/properties/'], a[href*='/listing/']")
+      .first();
     const href = anchor.attr("href") ?? "";
     const url = href.startsWith("http")
       ? href
       : href
-      ? `https://app.investorlift.com${href}`
-      : "";
+        ? `https://app.investorlift.com${href}`
+        : "";
 
     if (!url) return; // skip cards without a link
 
     // Price
     const priceText =
       card.find("[class*='price'], [data-testid*='price']").first().text() ||
-      card.find("span, p").filter((_, e) => /\$[\d,]+/.test($(e).text())).first().text();
+      card
+        .find("span, p")
+        .filter((_, e) => /\$[\d,]+/.test($(e).text()))
+        .first()
+        .text();
     const price = normalizePrice(priceText);
 
     // Address
     const address =
-      card.find("[class*='address'], [data-testid*='address']").first().text().trim() ||
-      anchor.text().trim();
+      card
+        .find("[class*='address'], [data-testid*='address']")
+        .first()
+        .text()
+        .trim() || anchor.text().trim();
 
     // Beds / baths / sqft
-    const detailText = card.find("[class*='detail'], [class*='spec'], [class*='stat']").text();
+    const detailText = card
+      .find("[class*='detail'], [class*='spec'], [class*='stat']")
+      .text();
     const bedsM = detailText.match(/(\d+)\s*(?:bd|bed|br)/i);
     const bathsM = detailText.match(/(\d+(?:\.\d+)?)\s*(?:ba|bath)/i);
     const sqftM = detailText.match(/([\d,]+)\s*(?:sqft|sq ft|sf)/i);

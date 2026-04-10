@@ -14,7 +14,8 @@
     "scrape:craigslist": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source craigslist",
     "scrape:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source zillow",
     "scrape:all": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source all",
-    "scrape:investorlift": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source investorlift"
+    "scrape:investorlift": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source investorlift",
+    "scrape:offmarket": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source offmarket"
   },
   "dependencies": {
     "@prisma/client": "^5.13.0",

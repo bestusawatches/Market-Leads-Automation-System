@@ -9,6 +9,8 @@ import { RawListing, PropertyType } from "../types/listing";
 import { config } from "../config";
 import { logger } from "../utils/logger";
 import { BrowserHandle, createBrowser, sleep, jitter } from "../utils/browser";
+import * as fs from "fs";
+import * as path from "path";
 
 export interface ScraperOptions {
   maxPages?: number;
@@ -29,7 +31,8 @@ export abstract class BaseScraper {
     this.options = {
       maxPages: options.maxPages ?? config.maxPages,
       maxListings: options.maxListings ?? config.maxListings,
-      proxyUrl: options.proxyUrl !== undefined ? options.proxyUrl : config.proxyUrl,
+      proxyUrl:
+        options.proxyUrl !== undefined ? options.proxyUrl : config.proxyUrl,
     };
   }
 
@@ -41,7 +44,7 @@ export abstract class BaseScraper {
    */
   protected abstract scrapePage(
     handle: BrowserHandle,
-    pageNumber: number
+    pageNumber: number,
   ): Promise<RawListing[]>;
 
   /**
@@ -50,7 +53,7 @@ export abstract class BaseScraper {
    */
   protected hasMorePages(
     _pageNumber: number,
-    lastPageResults: RawListing[]
+    lastPageResults: RawListing[],
   ): boolean {
     return lastPageResults.length > 0;
   }
@@ -70,6 +73,39 @@ export abstract class BaseScraper {
     if (!listing.price) return false;
     if (listing.price < config.filter.minPrice) return false;
     if (listing.price > config.filter.maxPrice) return false;
+    // Location filtering: match parsed `address` / `location` against allowed tokens
+    const locText =
+      `${listing.address ?? ""} ${listing.location ?? ""}`.toLowerCase();
+    const allowed = (config.filter.allowedLocations ?? []).map((s) =>
+      s.toLowerCase(),
+    );
+
+    // Match tokens carefully: short tokens (state abbreviations like "wi", "oh")
+    // must match as whole words to avoid false positives (e.g. "Windcrest").
+    const matchToken = (token: string): boolean => {
+      const t = token.trim();
+      if (t.length === 0) return false;
+      if (t.length <= 2) {
+        try {
+          const re = new RegExp(
+            "\\b" + t.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + "\\b",
+            "i",
+          );
+          return re.test(locText);
+        } catch {
+          return locText.includes(t);
+        }
+      }
+      return locText.includes(t);
+    };
+
+    if (allowed.length > 0 && !allowed.some((token) => matchToken(token))) {
+      logger.debug(
+        `[${this.sourceName}] ✗ Location filtered: ${listing.address ?? listing.location ?? listing.title}`,
+      );
+      return false;
+    }
+
     return true;
   }
 
@@ -93,6 +129,7 @@ export abstract class BaseScraper {
     logger.info(`[${this.sourceName}] Starting scrape`);
     this.visited.clear();
     this.results = [];
+    const rejected: Array<{ listing: RawListing; reason: string }> = [];
 
     const handle = await createBrowser();
 
@@ -100,7 +137,7 @@ export abstract class BaseScraper {
       for (let page = 1; page <= this.options.maxPages; page++) {
         if (this.results.length >= this.options.maxListings) {
           logger.info(
-            `[${this.sourceName}] Reached ${this.options.maxListings} listings — stopping`
+            `[${this.sourceName}] Reached ${this.options.maxListings} listings — stopping`,
           );
           break;
         }
@@ -116,21 +153,34 @@ export abstract class BaseScraper {
         }
 
         logger.info(
-          `[${this.sourceName}] Page ${page}: ${pageListings.length} raw listings`
+          `[${this.sourceName}] Page ${page}: ${pageListings.length} raw listings`,
         );
 
         for (const listing of pageListings) {
           if (this.results.length >= this.options.maxListings) break;
-          if (!listing.url || this.visited.has(listing.url)) continue;
+
+          if (!listing.url) {
+            rejected.push({ listing, reason: "no_url" });
+            continue;
+          }
+
+          if (this.visited.has(listing.url)) {
+            rejected.push({ listing, reason: "already_seen" });
+            continue;
+          }
+
           if (!this.passesFilter(listing)) {
+            rejected.push({ listing, reason: "filtered" });
             logger.debug(
-              `[${this.sourceName}] ✗ Price filtered: ${listing.address} @ ${listing.price}`
+              `[${this.sourceName}] ✗ Price/Location filtered: ${listing.address} @ ${listing.price}`,
             );
             continue;
           }
+
           if (!this.isRelevant(listing)) {
+            rejected.push({ listing, reason: "not_relevant" });
             logger.debug(
-              `[${this.sourceName}] ✗ Not relevant: ${listing.title}`
+              `[${this.sourceName}] ✗ Not relevant: ${listing.title}`,
             );
             continue;
           }
@@ -139,7 +189,7 @@ export abstract class BaseScraper {
           this.results.push(listing);
           logger.info(
             `[${this.sourceName}] ✓ [${this.results.length}/${this.options.maxListings}] ` +
-              `${listing.address ?? listing.title} @ $${listing.price?.toLocaleString()}`
+              `${listing.address ?? listing.title} @ $${listing.price?.toLocaleString()}`,
           );
         }
 
@@ -155,8 +205,24 @@ export abstract class BaseScraper {
     }
 
     logger.info(
-      `[${this.sourceName}] Finished — ${this.results.length} listings collected`
+      `[${this.sourceName}] Finished — ${this.results.length} listings collected`,
     );
+    // Write JSON output for this run: accepted + rejected
+    try {
+      const outDir = path.join(process.cwd(), "logs");
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, `${this.sourceName}.json`);
+      const payload = {
+        accepted: this.results,
+        rejected,
+        generatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(outPath, JSON.stringify(payload, null, 2), "utf8");
+      logger.info(`[${this.sourceName}] Wrote results to ${outPath}`);
+    } catch (err) {
+      logger.error(`[${this.sourceName}] Failed to write results JSON: ${err}`);
+    }
+
     return this.results;
   }
 }

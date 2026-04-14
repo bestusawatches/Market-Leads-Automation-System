@@ -32,7 +32,6 @@ export const config = {
   // Set to null to scrape without a proxy (recommended for initial testing).
   // Format: "http://user:pass@host:port"
   // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/
-  
 
   // proxyUrl: "http://uiqydusn:ayprrg8k3u13@198.105.121.200:6462",
   proxyUrl: "http://uiqydusn:ayprrg8k3u13@107.172.163.27:6543/",
@@ -72,6 +71,18 @@ export const config = {
       "duplex",
       "multi-family",
       "multifamily",
+    ],
+    // Tokens (lowercased) matched against parsed `address` / `location`.
+    // Include state names, abbreviations, and major cities we accept.
+    allowedLocations: [
+      "ohio",
+      "oh",
+      "cleveland",
+      "columbus",
+      "toledo",
+      "milwaukee",
+      "wisconsin",
+      "wi"
     ],
   },
 

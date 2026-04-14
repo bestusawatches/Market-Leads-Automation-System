@@ -44,6 +44,7 @@ export const config = {
   maxListings: Number(process.env.MAX_LISTINGS ?? 20),
   requestDelay: Number(process.env.REQUEST_DELAY_MS ?? 2000), // ms
 
+  
   // ── Filtering criteria ────────────────────────────────────────────────────
   filter: {
     minPrice: 50_000,

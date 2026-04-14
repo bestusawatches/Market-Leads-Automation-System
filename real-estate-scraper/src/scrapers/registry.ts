@@ -12,13 +12,19 @@ import { CraigslistScraper } from "./craigslist/craigslist.scraper";
 import { ZillowScraper } from "./zillow/zillow.scraper";
 import { InvestorLiftScraper } from "./investorlift/investorlift.scraper";
 import { OffmarketScraper } from "./offmarket/offmarket.scraper";
+import { FacebookScraper } from "./facebook/facebook.scraper";
 import { config } from "../config";
 
 /** Each entry returns a ready-to-run BaseScraper instance */
 export type ScraperFactory = () => BaseScraper;
 
 export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
+  // ── Facebook ───────────────────────────────────────────────────────────────
+  facebook: () => new FacebookScraper(),
+  
+  // ── Offmarket ─────────────────────────────────────────────────────────────
   offmarket: () => new OffmarketScraper(),
+
   // ── InvestorLift (highest priority per project doc §3.1) ─────────────────
   investorlift: () => new InvestorLiftScraper(),
 

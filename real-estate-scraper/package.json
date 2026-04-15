@@ -16,7 +16,8 @@
     "scrape:all": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source all",
     "scrape:investorlift": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source investorlift",
     "scrape:offmarket": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source offmarket",
-    "scrape:facebook": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source facebook"
+    "scrape:facebook": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source facebook",
+    "scrape:marketplace": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source facebook_marketplace"
   },
   "dependencies": {
     "@prisma/client": "^5.13.0",

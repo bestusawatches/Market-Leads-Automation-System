@@ -12,6 +12,7 @@ import { CraigslistScraper } from "./craigslist/craigslist.scraper";
 import { ZillowScraper } from "./zillow/zillow.scraper";
 import { InvestorLiftScraper } from "./investorlift/investorlift.scraper";
 import { OffmarketScraper } from "./offmarket/offmarket.scraper";
+import { MarketplaceScraper } from "./marketplace/marketplace.scraper";
 import { FacebookScraper } from "./facebook/facebook.scraper";
 import { config } from "../config";
 
@@ -19,6 +20,9 @@ import { config } from "../config";
 export type ScraperFactory = () => BaseScraper;
 
 export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
+  // Facebook marketplace is technically part of Facebook, but we treat it as a separate source since the listings are different and more structured
+  facebook_marketplace: () => new MarketplaceScraper(),
+
   // ── Facebook ───────────────────────────────────────────────────────────────
   facebook: () => new FacebookScraper(),
   

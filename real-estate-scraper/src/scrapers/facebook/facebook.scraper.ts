@@ -1,28 +1,4 @@
 // src/scrapers/facebook/facebook.scraper.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Facebook Groups scraper for real estate investment leads.
-//
-// REQUIREMENTS before running:
-//   1. A dedicated throwaway FB account (NOT your personal account)
-//      - Add a profile photo and fill in basic info
-//      - Manually join your target groups and wait a few days
-//   2. A US residential proxy (PROXY_URL in .env)
-//   3. FACEBOOK_EMAIL and FACEBOOK_PASSWORD in .env
-//   4. FACEBOOK_GROUP_URLS — comma-separated group URLs in .env
-//
-// .env example:
-//   FACEBOOK_EMAIL=yourthrowaway@email.com
-//   FACEBOOK_PASSWORD=yourpassword
-//   FACEBOOK_GROUP_URLS=https://www.facebook.com/groups/ohiorealestateinvestors,https://www.facebook.com/groups/milwaukeeinvestmentproperties
-//   PROXY_URL=http://user:pass@us-residential-host:port
-//
-// ANTI-BOT NOTES:
-//   - Facebook runs PerimeterX + their own browser fingerprinting
-//   - Never run this on your personal account
-//   - Randomize all delays — consistent timing is a bot signal
-//   - If you hit a CAPTCHA or checkpoint, you must solve it manually
-//   - Accounts used for scraping will eventually get checkpointed or banned
-// ─────────────────────────────────────────────────────────────────────────────
 
 import { Page } from "playwright";
 import { BaseScraper, ScraperOptions } from "../base.scraper";
@@ -34,17 +10,13 @@ import * as fs from "fs";
 import * as path from "path";
 
 const LOGIN_URL = "https://www.facebook.com/login";
-const FB_BASE = "https://www.facebook.com";
+const SESSION_FILE = "facebook-session.json";
 
-// Target groups for Ohio + Milwaukee investment properties
-const DEFAULT_GROUP_URLS: string[] = (
-  process.env.FACEBOOK_GROUP_URLS ?? ""
-)
+const DEFAULT_GROUP_URLS: string[] = (process.env.FACEBOOK_GROUP_URLS ?? "")
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean);
 
-// How far to scroll per "pass" on a group feed (pixels)
 const SCROLL_PASSES = 8;
 const SCROLL_STEP = 800;
 
@@ -52,31 +24,18 @@ export class FacebookScraper extends BaseScraper {
   readonly sourceName = "facebook";
 
   private loggedIn = false;
-  private currentGroupIndex = 0;
 
   constructor(options: ScraperOptions = {}) {
     super(options);
 
-    if (!process.env.FACEBOOK_EMAIL || !process.env.FACEBOOK_PASSWORD) {
+    if (!process.env.FACEBOOK_USERNAME || !process.env.FACEBOOK_PASSWORD) {
       logger.error(
-        "[facebook] FACEBOOK_EMAIL and FACEBOOK_PASSWORD must be set in .env\n" +
-          "  Use a dedicated throwaway account — never your personal account."
-      );
-    }
-
-    if (!process.env.PROXY_URL) {
-      logger.warn(
-        "[facebook] No PROXY_URL set. Facebook is more likely to trigger\n" +
-          "  checkpoints without a US residential proxy."
+        "[facebook] FACEBOOK_USERNAME and FACEBOOK_PASSWORD must be set in .env"
       );
     }
 
     if (DEFAULT_GROUP_URLS.length === 0) {
-      logger.warn(
-        "[facebook] No FACEBOOK_GROUP_URLS set in .env.\n" +
-          "  Add comma-separated group URLs:\n" +
-          "  FACEBOOK_GROUP_URLS=https://www.facebook.com/groups/ohioreinvestors,..."
-      );
+      logger.warn("[facebook] No FACEBOOK_GROUP_URLS set");
     } else {
       logger.info(
         `[facebook] ${DEFAULT_GROUP_URLS.length} target group(s):\n` +
@@ -85,71 +44,78 @@ export class FacebookScraper extends BaseScraper {
     }
   }
 
-  // ── Login ──────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Session Helpers
+  // ─────────────────────────────────────────────────────────────
+
+  private sessionExists(): boolean {
+    return fs.existsSync(SESSION_FILE);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Login
+  // ─────────────────────────────────────────────────────────────
 
   private async login(page: Page): Promise<boolean> {
-    const email = process.env.FACEBOOK_EMAIL;
+    const username = process.env.FACEBOOK_USERNAME;
     const password = process.env.FACEBOOK_PASSWORD;
-    if (!email || !password) return false;
+    if (!username || !password) return false;
 
     logger.info("[facebook] Logging in…");
 
     try {
-      await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await sleep(2000 + Math.random() * 1500);
+      await page.goto(LOGIN_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
 
-      // Accept cookies if the dialog appears (common in some regions)
-      try {
-        const cookieBtn = await page.$(
-          '[data-cookiebanner="accept_button"], [aria-label*="Accept"], button:has-text("Accept All")'
-        );
-        if (cookieBtn) {
-          await cookieBtn.click();
-          await sleep(1000);
-        }
-      } catch {
-        // no cookie banner
-      }
+      await sleep(3000);
 
-      // Fill email
-      await page.fill("#email", email);
-      await sleep(500 + Math.random() * 500);
+      // DEBUG: Save page in case of failure
+      const htmlBefore = await page.content();
+      this.saveDebug(htmlBefore, "login_page_loaded");
 
-      // Fill password (type slowly — instant fill looks like a bot)
+      // Wait explicitly for email field
+      await page.waitForSelector("#email", { timeout: 60000 });
+
+      await page.fill("#email", username);
+      await sleep(500);
+
       await page.fill("#pass", "");
       for (const char of password) {
-        await page.type("#pass", char, { delay: 80 + Math.random() * 80 });
+        await page.type("#pass", char, { delay: 80 });
       }
-      await sleep(800 + Math.random() * 500);
 
-      // Click login
       await page.click('[name="login"]');
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 });
-      await sleep(3000 + Math.random() * 2000);
+
+      await page.waitForLoadState("domcontentloaded");
+      await sleep(5000);
 
       const url = page.url();
       const html = await page.content();
 
-      // Check for checkpoint / captcha
-      if (url.includes("checkpoint") || html.toLowerCase().includes("confirm your identity")) {
-        logger.error(
-          "[facebook] ⚠️  Account checkpoint detected.\n" +
-            "  Facebook requires manual verification. Open the browser in non-headless\n" +
-            "  mode (set HEADLESS=false in .env or browser.ts) and solve the checkpoint,\n" +
-            "  then re-run."
-        );
-        this.saveDebug(html, "checkpoint");
+      this.saveDebug(html, "after_login");
+
+      if (
+        url.includes("checkpoint") ||
+        html.toLowerCase().includes("confirm your identity")
+      ) {
+        logger.error("[facebook] Account checkpoint detected");
         return false;
       }
 
-      if (url.includes("login") || html.toLowerCase().includes("wrong password")) {
-        logger.error("[facebook] Login failed — check FACEBOOK_EMAIL / FACEBOOK_PASSWORD");
-        this.saveDebug(html, "login_failed");
+      if (url.includes("login")) {
+        logger.error("[facebook] Login failed");
         return false;
       }
 
-      logger.info("[facebook] ✓ Logged in successfully");
-      this.saveDebug(html, "logged_in");
+      logger.info("[facebook] ✓ Logged in");
+
+      // SAVE SESSION
+      const context = page.context();
+      await context.storageState({ path: SESSION_FILE });
+      logger.info("[facebook] Session saved");
+
       this.loggedIn = true;
       return true;
     } catch (err) {
@@ -158,207 +124,129 @@ export class FacebookScraper extends BaseScraper {
     }
   }
 
-  // ── Navigate to group ──────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Navigate
+  // ─────────────────────────────────────────────────────────────
 
-  private async navigateToGroup(page: Page, groupUrl: string): Promise<boolean> {
-    logger.info(`[facebook] Navigating to group: ${groupUrl}`);
+  private async navigateToGroup(page: Page, groupUrl: string) {
     try {
-      // Append /buy_sell_discussion or /posts for the deals feed if not already there
-      const feedUrl = groupUrl.replace(/\/?$/, "") + "/";
-      await page.goto(feedUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await sleep(4000 + Math.random() * 2000);
+      await page.goto(groupUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+
+      await sleep(5000);
 
       const html = await page.content();
+      this.saveDebug(html, "group_page");
 
-      // Check if we got redirected to login (session expired)
       if (page.url().includes("login")) {
-        logger.warn("[facebook] Redirected to login — session may have expired");
+        logger.warn("[facebook] Redirected to login");
         return false;
       }
 
-      // Check if group is private and we're not a member
-      if (
-        html.includes("Join Group") ||
-        html.toLowerCase().includes("you must join this group")
-      ) {
-        logger.error(
-          `[facebook] Not a member of group: ${groupUrl}\n` +
-            "  Join the group manually with your account and wait a few days before scraping."
-        );
+      if (html.includes("Join Group")) {
+        logger.error(`[facebook] Not a member: ${groupUrl}`);
         return false;
       }
 
       return true;
     } catch (err) {
-      logger.warn(`[facebook] Navigation error for ${groupUrl}: ${err}`);
+      logger.error(`[facebook] Navigation error: ${err}`);
       return false;
     }
   }
 
-  // ── Scroll feed to load posts ──────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Scroll
+  // ─────────────────────────────────────────────────────────────
 
-  private async scrollFeed(page: Page, targetPostCount: number): Promise<void> {
-    logger.debug(`[facebook] Scrolling to load ~${targetPostCount} posts…`);
-
-    let lastHeight = 0;
-    let noGrowthCount = 0;
-
-    for (let pass = 0; pass < SCROLL_PASSES; pass++) {
-      // Scroll down gradually — smooth scrolling looks more human
-      for (let i = 0; i < 3; i++) {
-        await page.evaluate(`window.scrollBy(0, ${SCROLL_STEP + Math.random() * 200})`);
-        await sleep(400 + Math.random() * 300);
-      }
-
-      // Longer pause every few passes to let content load
-      if (pass % 2 === 0) {
-        await sleep(2000 + Math.random() * 1500);
-      }
-
-      const currentHeight = await page.evaluate("document.body.scrollHeight") as number;
-
-      // Count visible posts
-      const postCount = await page.evaluate(
-        () => document.querySelectorAll("[role='article']").length
-      ) as number;
-
-      logger.debug(`[facebook] Scroll pass ${pass + 1}: ${postCount} posts visible`);
-
-      if (postCount >= targetPostCount) break;
-
-      if (currentHeight === lastHeight) {
-        noGrowthCount++;
-        if (noGrowthCount >= 3) {
-          logger.debug("[facebook] Page height stable — likely reached end of feed");
-          break;
-        }
-      } else {
-        noGrowthCount = 0;
-      }
-      lastHeight = currentHeight;
-
-      // Occasionally scroll back up a bit — more human-like
-      if (pass % 3 === 2) {
-        await page.evaluate(`window.scrollBy(0, -${200 + Math.random() * 200})`);
-        await sleep(500);
-      }
+  private async scrollFeed(page: Page) {
+    for (let i = 0; i < SCROLL_PASSES; i++) {
+      await page.evaluate(`window.scrollBy(0, ${SCROLL_STEP})`);
+      await sleep(1500);
     }
   }
 
-  // ── Handle "See More" expansions ───────────────────────────────────────────
-
-  private async expandPosts(page: Page): Promise<void> {
-    try {
-      // Click "See more" links in post bodies so we get full text
-      const seeMoreLinks = await page.$$(
-        '[aria-label="See more"], [aria-expanded="false"][role="button"]'
-      );
-
-      for (const link of seeMoreLinks.slice(0, 20)) {
-        try {
-          await link.click();
-          await sleep(200 + Math.random() * 150);
-        } catch {
-          // some links may be stale
-        }
-      }
-    } catch {
-      // non-fatal
+  private async expandPosts(page: Page) {
+    const buttons = await page.$$('[aria-label="See more"]');
+    for (const btn of buttons.slice(0, 20)) {
+      try {
+        await btn.click();
+        await sleep(200);
+      } catch {}
     }
   }
 
-  // ── BaseScraper implementation ─────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Main scrape
+  // ─────────────────────────────────────────────────────────────
 
   protected async scrapePage(
     handle: BrowserHandle,
     pageNumber: number
   ): Promise<RawListing[]> {
-    if (DEFAULT_GROUP_URLS.length === 0) {
-      logger.error("[facebook] No group URLs configured — nothing to scrape");
-      return [];
-    }
+    if (DEFAULT_GROUP_URLS.length === 0) return [];
 
-    const page = await handle.newPage();
+    const context = this.sessionExists()
+      ? await handle.browser.newContext({ storageState: SESSION_FILE })
+      : await handle.browser.newContext();
+
+    const page = await context.newPage();
 
     try {
-      // Login once at the start of the first scrape pass
-      if (!this.loggedIn) {
+      if (!this.sessionExists()) {
         const ok = await this.login(page);
         if (!ok) return [];
-        // Human-like pause after login before navigating to groups
-        await sleep(5000 + Math.random() * 3000);
+      } else {
+        logger.info("[facebook] Using saved session");
       }
 
-      // Each "page" corresponds to one group
-      const groupIndex = (pageNumber - 1) % DEFAULT_GROUP_URLS.length;
-      const groupUrl = DEFAULT_GROUP_URLS[groupIndex];
+      const groupUrl =
+        DEFAULT_GROUP_URLS[(pageNumber - 1) % DEFAULT_GROUP_URLS.length];
 
-      if (!groupUrl) return [];
+      const ok = await this.navigateToGroup(page, groupUrl);
+      if (!ok) return [];
 
-      const source = `facebook_${this.slugifyGroupUrl(groupUrl)}`;
-
-      const navigated = await this.navigateToGroup(page, groupUrl);
-      if (!navigated) return [];
-
-      // Scroll to load posts — aim for ~40 posts per pass
-      const targetPosts = Math.min(
-        this.options.maxListings ?? 40,
-        40
-      );
-      await this.scrollFeed(page, targetPosts);
+      await this.scrollFeed(page);
       await this.expandPosts(page);
 
-      // Small final wait for any lazy-loaded content
-      await sleep(2000);
-
       const html = await page.content();
-      this.saveDebug(html, `group_${groupIndex}_page_${pageNumber}`);
+      this.saveDebug(html, "final_page");
 
-      const listings = parseFacebookGroupPosts(html, groupUrl, source);
-
-      logger.info(
-        `[facebook] Group ${groupIndex + 1}/${DEFAULT_GROUP_URLS.length} ` +
-          `(${groupUrl.split("/").pop()}): ${listings.length} listings`
+      const listings = parseFacebookGroupPosts(
+        html,
+        groupUrl,
+        "facebook"
       );
 
-      // If there are more groups and we haven't hit our limit, signal that
-      // there's more to scrape by returning a non-empty result — BaseScraper
-      // will call scrapePage with pageNumber+1 automatically.
+      logger.info(`[facebook] ${listings.length} listings`);
+
       return listings;
     } catch (err) {
       logger.error(`[facebook] scrapePage error: ${err}`);
       return [];
     } finally {
-      await page.close().catch(() => {});
+      await context.close();
     }
   }
-
-  // ── Should continue to next page? ─────────────────────────────────────────
-  // Override BaseScraper's pagination: we stop when we've visited all groups.
 
   protected shouldContinue(pageNumber: number): boolean {
     return pageNumber <= DEFAULT_GROUP_URLS.length;
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Debug helper
+  // ─────────────────────────────────────────────────────────────
 
-  private slugifyGroupUrl(url: string): string {
-    const m = url.match(/groups\/([^/?#]+)/);
-    return m ? m[1].replace(/[^a-z0-9]/gi, "_").toLowerCase() : "group";
-  }
-
-  private saveDebug(html: string, label: string): void {
+  private saveDebug(html: string, label: string) {
     try {
-      const logDir = path.resolve(process.cwd(), "logs");
-      fs.mkdirSync(logDir, { recursive: true });
+      const dir = path.resolve("logs");
+      fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
-        path.join(logDir, `facebook_${label}.html`),
-        html,
-        "utf-8"
+        path.join(dir, `facebook_${label}.html`),
+        html
       );
-      logger.debug(`[facebook] Debug → logs/facebook_${label}.html`);
-    } catch {
-      // non-critical
-    }
+    } catch {}
   }
 }

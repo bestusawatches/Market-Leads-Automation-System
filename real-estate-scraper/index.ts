@@ -5,6 +5,7 @@
 //   ts-node index.ts --source zillow
 //   ts-node index.ts --source all
 
+import "dotenv/config";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { SCRAPER_REGISTRY, resolveSourceKeys } from "./src/scrapers/registry";

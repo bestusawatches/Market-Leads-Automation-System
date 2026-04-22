@@ -7,7 +7,7 @@
 export const config = {
   // ── Browser ────────────────────────────────────────────────────────────────
   browser: {
-    headless: false,
+    headless: true,
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -33,9 +33,9 @@ export const config = {
   // Format: "http://user:pass@host:port"
   // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/
 
-  // proxyUrl: "http://uiqydusn:ayprrg8k3u13@198.105.121.200:6462",
-  proxyUrl: "http://uiqydusn:ayprrg8k3u13@107.172.163.27:6543/",
-  // proxyUrl: "http://uiqydusn:ayprrg8k3u13@216.10.27.159:6837/",
+  // proxyUrl: "http://fkmevgky:lmza5a3m78uw@107.172.163.27:6543",
+  proxyUrl: "",
+  
   // proxyUrl:"",
 
   // https://ipv4.webshare.io/
@@ -97,6 +97,42 @@ export const config = {
     },
     zillow:
       "https://www.zillow.com/oh/?searchQueryState=%7B%22filterState%22%3A%7B%22price%22%3A%7B%22max%22%3A300000%7D%7D%7D",
+    crexi: {
+      // Crexi search URLs for multifamily and key markets (Ohio + Wisconsin)
+      searchUrls: (process.env.CREXI_SEARCH_URLS ?? "")
+        .split(",")
+        .map((u) => u.trim())
+        .filter(Boolean)
+        .length > 0
+        ? (process.env.CREXI_SEARCH_URLS ?? "").split(",").map((u) => u.trim()).filter(Boolean)
+        : [
+            "https://www.crexi.com/properties/OH/Multifamily",
+            "https://www.crexi.com/properties/OH/Columbus_",
+            "https://www.crexi.com/properties/OH/Cleveland",
+            "https://www.crexi.com/properties/OH/Toledo",
+            "https://www.crexi.com/properties/WI/Milwaukee",
+            "https://www.crexi.com/properties/WI/Multifamily",
+          ],
+    },
+    loopnet: {
+      // LoopNet search URLs for multifamily and key markets (Ohio + Wisconsin)
+      searchUrls: (process.env.LOOPNET_SEARCH_URLS ?? "")
+        .split(",")
+        .map((u) => u.trim())
+        .filter(Boolean)
+        .length > 0
+        ? (process.env.LOOPNET_SEARCH_URLS ?? "").split(",").map((u) => u.trim()).filter(Boolean)
+        : [
+            "https://www.loopnet.com/search/multifamily-properties/oh/for-sale/",
+            "https://www.loopnet.com/search/apartment-buildings/oh/for-sale/",
+            "https://www.loopnet.com/search/multifamily-properties/columbus-oh/for-sale/",
+            "https://www.loopnet.com/search/multifamily-properties/cleveland-oh/for-sale/",
+            "https://www.loopnet.com/search/multifamily-properties/toledo-oh/for-sale/",
+            "https://www.loopnet.com/search/multifamily-properties/milwaukee-wi/for-sale/",
+            "https://www.loopnet.com/search/apartment-buildings/wi/for-sale/",
+          ],
+      maxPagesPerUrl: Number(process.env.LOOPNET_MAX_PAGES ?? 3),
+    },
   },
 } as const;
 

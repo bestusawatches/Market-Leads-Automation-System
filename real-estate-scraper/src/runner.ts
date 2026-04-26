@@ -1,38 +1,21 @@
 // src/runner.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Orchestrator.  The runner:
-//   1. Calls each scraper's run() to get RawListing[]
-//   2. Runs basic underwriting scoring
-//   3. Saves everything to the DB via repository
-//
-// Scrapers know nothing about the DB.
-// The DB repository knows nothing about scrapers.
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { RawListing, ListingUpsertPayload, DealScore } from "./types/listing";
 import { upsertMany, getSummaryStats } from "./db/repository";
 import { logger } from "./utils/logger";
+import { enrichRawListings } from "./enrichers/zillow/index.enricher";
 
 // ── Underwriting engine ───────────────────────────────────────────────────────
 
-/**
- * Assign a deal score based on price vs zestimate (ARV).
- *
- * Thresholds (adjust to your investment criteria):
- *   price ≤ 70% of ARV  → good_deal
- *   price ≤ 85% of ARV  → average_deal
- *   otherwise           → low_potential
- */
 function scoreListings(listings: RawListing[]): ListingUpsertPayload[] {
   return listings.map((listing): ListingUpsertPayload => {
-    const arv = listing.zestimate ?? listing.price; // fallback: use price itself
+    const arv = listing.zestimate ?? listing.price;
     let dealScore: DealScore = "low_potential";
     let equityEstimate: number | undefined;
 
     if (arv && listing.price) {
       equityEstimate = arv - listing.price;
       const ratio = listing.price / arv;
-      if (ratio <= 0.7) dealScore = "good_deal";
+      if (ratio <= 0.7)       dealScore = "good_deal";
       else if (ratio <= 0.85) dealScore = "average_deal";
     }
 
@@ -43,9 +26,7 @@ function scoreListings(listings: RawListing[]): ListingUpsertPayload[] {
 // ── Main runner ───────────────────────────────────────────────────────────────
 
 export interface RunOptions {
-  /** Keys from SCRAPER_REGISTRY to run, already resolved (no "all") */
   sourceKeys: string[];
-  /** Factory map so runner doesn't depend on registry directly */
   factories: Record<string, () => import("./scrapers/base.scraper").BaseScraper>;
 }
 
@@ -81,10 +62,23 @@ export async function runScrapers(options: RunOptions): Promise<void> {
       continue;
     }
 
-    // Score listings
+    // ── Zillow enrichment (in-memory, before scoring and DB upsert) ───────
+    logger.info(
+      `[${key}] Running Zillow enrichment on ${rawListings.length} listings`
+    );
+    try {
+      rawListings = await enrichRawListings(rawListings);
+    } catch (err) {
+      // Enrichment failure is non-fatal — listings still save without zestimate
+      logger.error(
+        `[${key}] Zillow enrichment failed — continuing without zestimates: ${err}`
+      );
+    }
+
+    // Score listings — zestimate is now attached where Zillow found a match,
+    // so scoreListings will use real ARV instead of falling back to price
     const payloads = scoreListings(rawListings);
 
-    // Persist to DB
     try {
       await upsertMany(payloads);
       totalSaved += payloads.length;
@@ -94,7 +88,6 @@ export async function runScrapers(options: RunOptions): Promise<void> {
     }
   }
 
-  // Print summary
   logger.info(`\n${"=".repeat(60)}`);
   logger.info(`Run complete | total saved: ${totalSaved}`);
 

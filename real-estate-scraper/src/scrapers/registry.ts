@@ -9,7 +9,7 @@
 
 import { BaseScraper } from "./base.scraper";
 import { CraigslistScraper } from "./craigslist/craigslist.scraper";
-// import { ZillowScraper } from "../enrichers/zillow/zillow.scraper";
+import { ZillowScraper } from "./zillow/zillow.scraper";
 import { InvestorLiftScraper } from "./investorlift/investorlift.scraper";
 import { OffmarketScraper } from "./offmarket/offmarket.scraper";
 import { MarketplaceScraper } from "./marketplace/marketplace.scraper";
@@ -54,7 +54,7 @@ export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
     new CraigslistScraper(config.sources.craigslist.toledo),
 
   // ── Zillow ────────────────────────────────────────────────────────────────
-  // zillow: () => new ZillowScraper(config.sources.zillow),
+  zillow: () => new ZillowScraper(),
 };
 
 // ── Source group aliases ──────────────────────────────────────────────────────

@@ -41,6 +41,8 @@ export interface RawListing {
   realtorEstimate?: number;
   redfinEstimate?: number;
   propwireEstimate?: number;
+  listedAt?: Date;
+  daysOnZillow?: number;
 }
 
 /** Underwriting result computed by the scoring engine */

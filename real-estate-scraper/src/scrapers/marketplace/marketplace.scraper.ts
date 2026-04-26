@@ -13,7 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 const FB_BASE      = "https://www.facebook.com";
-const SESSION_FILE = "facebook-session.json"; // shared with facebook.scraper
+const SESSION_FILE = "facebook-session.json";
 
 const MAX_PRICE = parseInt(process.env.FB_MARKETPLACE_MAX_PRICE ?? "300000", 10);
 
@@ -30,13 +30,8 @@ const TARGET_CITIES: Array<{ slug: string; label: string }> = [
 const PROPERTY_TYPES  = ["house", "apartment"];
 const DETAIL_DELAY_MS = 3_500;
 const SCROLL_PASSES   = 6;
+const CARD_WAIT_MS    = 40_000;
 
-// How long to wait for listing cards to appear after page load (ms).
-// Facebook Marketplace renders cards via JS — 12s was too short. 40s gives
-// the React bundle time to hydrate and fire its GraphQL fetch.
-const CARD_WAIT_MS = 40_000;
-
-// Selectors for listing item links — FB uses both formats
 const ITEM_LINK_SELECTORS = [
   "a[href*='/marketplace/item/']",
   "a[href*='marketplace/item']",
@@ -49,6 +44,42 @@ const MODAL_CLOSE_SELECTORS = [
   "div[role='dialog'] div[role='button']:has-text('Not now')",
   "div[role='dialog'] div[role='button']:has-text('Close')",
   "div[role='dialog'] [data-testid='dialog-close-button']",
+];
+
+// ─────────────────────────────────────────────────────────────
+// Session signals
+//
+// THE ROOT CAUSE of the original bug was that verifySession()
+// navigated to facebook.com/ and only checked for a login
+// redirect. The homepage renders a partial page for anonymous
+// users WITHOUT redirecting — so the check always passed.
+//
+// Proof: the saved HTML contained `"t":"fb_loggedout"` in the
+// inline qexData JSON on EVERY search result page, meaning all
+// 14 targets scraped as an unauthenticated user and received
+// the generic category shell with no listing cards.
+//
+// Fix: inspect the HTML for explicit logged-in / logged-out
+// signals on BOTH the session verify page AND each search page.
+// ─────────────────────────────────────────────────────────────
+
+/** Any of these in the HTML confirms an active authed session. */
+const LOGGED_IN_SIGNALS = [
+  '"viewerID"',            // Relay store viewer node — present only when authed
+  '"USER_ID"',             // Another authed user indicator in inline Relay JSON
+  'id="mount_0_0"',        // Comet app root hydrated for logged-in users
+];
+
+/**
+ * Any of these in the HTML means we are definitively logged out.
+ * The most reliable is `"t":"fb_loggedout"` from the qexData blob —
+ * this is exactly what appeared in every saved search-result HTML.
+ */
+const LOGGED_OUT_SIGNALS = [
+  '"t":"fb_loggedout"',    // qexData type field — definitive logged-out marker
+  '"fb_loggedout"',        // alternate serialisation
+  'id="email"',            // Login-form email input
+  '"isLoggedIn":false',
 ];
 
 export class MarketplaceScraper extends BaseScraper {
@@ -88,6 +119,36 @@ export class MarketplaceScraper extends BaseScraper {
     return fs.existsSync(SESSION_FILE);
   }
 
+  /** Returns true if html has a logged-in signal and no logged-out signals. */
+  private htmlIndicatesLoggedIn(html: string): boolean {
+    for (const signal of LOGGED_OUT_SIGNALS) {
+      if (html.includes(signal)) return false;
+    }
+    return LOGGED_IN_SIGNALS.some(s => html.includes(s));
+  }
+
+  /**
+   * Returns "ok" | "logged_out" | "ambiguous".
+   * "ambiguous" means neither signal set matched — likely a FB layout change;
+   * we proceed but log a warning rather than aborting unnecessarily.
+   */
+  private checkSessionInHtml(
+    html: string,
+    label: string
+  ): "ok" | "logged_out" | "ambiguous" {
+    for (const signal of LOGGED_OUT_SIGNALS) {
+      if (html.includes(signal)) {
+        logger.error(
+          `[marketplace] "${label}" served as logged-out — signal: "${signal}"`
+        );
+        return "logged_out";
+      }
+    }
+    if (LOGGED_IN_SIGNALS.some(s => html.includes(s))) return "ok";
+    logger.warn(`[marketplace] "${label}": no session signals in HTML — proceeding cautiously`);
+    return "ambiguous";
+  }
+
   // ─────────────────────────────────────────────────────────────
   // Login
   // ─────────────────────────────────────────────────────────────
@@ -106,7 +167,7 @@ export class MarketplaceScraper extends BaseScraper {
       });
       await sleep(2500 + Math.random() * 1500);
 
-      this.saveDebug(await page.content(), "mp_homepage_loaded");
+      await this.saveDebug(await page.content(), "mp_homepage_loaded", page);
 
       await page.waitForSelector(
         '#email, input[name="email"], input[type="email"], input[autocomplete="username"], ' +
@@ -174,7 +235,7 @@ export class MarketplaceScraper extends BaseScraper {
 
       const url  = page.url();
       const html = await page.content();
-      this.saveDebug(html, "mp_after_login");
+      await this.saveDebug(html, "mp_after_login", page);
       logger.info(`[marketplace] Post-login URL: ${url}`);
 
       if (
@@ -185,7 +246,7 @@ export class MarketplaceScraper extends BaseScraper {
         html.toLowerCase().includes("approval code")
       ) {
         logger.warn("[marketplace] ⚠️  Checkpoint / 2FA — pausing for manual completion");
-        this.saveDebug(html, "mp_checkpoint");
+        await this.saveDebug(html, "mp_checkpoint", page);
         await this.handleTwoFactorOrCheckpoint(page);
 
         const urlAfter = page.url();
@@ -201,7 +262,13 @@ export class MarketplaceScraper extends BaseScraper {
 
       if (url.includes("login") || html.toLowerCase().includes("wrong password")) {
         logger.error("[marketplace] Login failed — check credentials");
-        this.saveDebug(html, "mp_login_failed");
+        await this.saveDebug(html, "mp_login_failed", page);
+        return false;
+      }
+
+      if (!this.htmlIndicatesLoggedIn(html)) {
+        logger.error("[marketplace] Login appeared to succeed but no session signals found in post-login HTML");
+        await this.saveDebug(html, "mp_login_no_session_signal", page);
         return false;
       }
 
@@ -211,7 +278,7 @@ export class MarketplaceScraper extends BaseScraper {
       return true;
     } catch (err) {
       logger.error(`[marketplace] Login error: ${err}`);
-      this.saveDebug(await page.content().catch(() => ""), "mp_login_error");
+      await this.saveDebug(await page.content().catch(() => ""), "mp_login_error", page);
       return false;
     }
   }
@@ -223,20 +290,41 @@ export class MarketplaceScraper extends BaseScraper {
     try { await page.context().storageState({ path: SESSION_FILE }); } catch {}
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // Session verification — STRICT
+  //
+  // Navigate to /marketplace/ (not just /) — it more reliably
+  // reflects auth state since the homepage renders partially for
+  // anonymous users without triggering a login redirect.
+  //
+  // Then use checkSessionInHtml() instead of URL-only checks.
+  // ─────────────────────────────────────────────────────────────
+
   private async verifySession(page: Page): Promise<boolean> {
     try {
-      await page.goto("https://www.facebook.com/", {
+      await page.goto("https://www.facebook.com/marketplace/", {
         waitUntil: "domcontentloaded",
         timeout:   30_000,
       });
       await sleep(3000);
+
       const url  = page.url();
       const html = await page.content();
-      if (url.includes("login") || html.includes('id="email"')) {
-        logger.warn("[marketplace] Session expired");
+      await this.saveDebug(html, "mp_session_verify", page);
+
+      if (url.includes("login") || url.includes("checkpoint")) {
+        logger.warn(`[marketplace] Session expired — redirected to: ${url}`);
         return false;
       }
-      logger.info("[marketplace] Session verified ✓");
+
+      const state = this.checkSessionInHtml(html, "session_verify");
+      if (state === "logged_out") return false;
+
+      logger.info(
+        state === "ok"
+          ? "[marketplace] Session verified ✓ (logged-in signals confirmed)"
+          : "[marketplace] Session verify ambiguous — proceeding (will recheck per target)"
+      );
       return true;
     } catch {
       return false;
@@ -281,22 +369,8 @@ export class MarketplaceScraper extends BaseScraper {
     return `${FB_BASE}/marketplace/${citySlug}/propertyforsale/?${params}`;
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Block detection — ONLY flag genuine auth blocks.
-  //
-  // Previously "this content isn" was triggering false positives
-  // because Facebook Marketplace shows "This content isn't available
-  // right now" on some category pages even when fully logged in.
-  // That is NOT a block — it just means no listings in that category.
-  //
-  // We now only treat something as blocked if it clearly signals that
-  // the user is NOT authenticated (login wall / checkpoint / rate limit).
-  // We log WHICH phrase triggered it so false positives are obvious.
-  // ─────────────────────────────────────────────────────────────
-
   private isBlocked(html: string, label: string): boolean {
     const lower = html.toLowerCase();
-
     const authBlockPhrases: Array<[string, string]> = [
       ["you must log in to",          "login wall"],
       ["log in to continue",           "login wall"],
@@ -306,38 +380,69 @@ export class MarketplaceScraper extends BaseScraper {
       ["we detected an unusual login", "checkpoint"],
       ["too many requests",            "rate limit"],
     ];
-
     for (const [phrase, reason] of authBlockPhrases) {
       if (lower.includes(phrase)) {
-        logger.warn(`[marketplace] Auth block detected (${reason}) on "${label}" — phrase: "${phrase}"`);
+        logger.warn(`[marketplace] Auth block (${reason}) on "${label}" — phrase: "${phrase}"`);
         return true;
       }
     }
-
     return false;
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Wait for listing cards to appear.
+  // Switch to list view
   //
-  // Facebook Marketplace renders cards via a React/GraphQL pipeline.
-  // After domcontentloaded the JS bundle still needs to:
-  //   1. Parse + execute (300-2000ms)
-  //   2. Fire a GraphQL fetch for listings (~500-3000ms round-trip)
-  //   3. Render the result cards into the DOM
+  // Real estate on FB Marketplace defaults to map view for some
+  // accounts. Listing cards only appear in list/grid view.
   //
   // Strategy:
-  //   • First wait for networkidle (up to 15s) so the GraphQL fetch has
-  //     time to complete before we start polling for card elements.
-  //   • Then use waitForFunction to poll for item links (up to CARD_WAIT_MS).
-  //   • If that times out, do a light scroll to nudge lazy rendering and
-  //     try one more time.
-  //
-  // Returns the number of cards found, or 0 if none appeared.
+  //   1. Click known list-view toggle buttons.
+  //   2. Fall back to appending ?view=list to the URL.
+  // ─────────────────────────────────────────────────────────────
+
+  private async switchToListView(page: Page, label: string): Promise<void> {
+    const listViewSelectors = [
+      '[aria-label="List view"]',
+      '[aria-label="Show list"]',
+      '[aria-label="Grid view"]',
+      '[aria-label="Show grid"]',
+      'div[role="tab"]:has-text("List")',
+      'div[role="button"][aria-label*="list" i]',
+      'div[role="button"][aria-label*="grid" i]',
+    ];
+
+    for (const selector of listViewSelectors) {
+      try {
+        const btn = await page.$(selector);
+        if (btn) {
+          await btn.click();
+          logger.info(`[marketplace] Switched to list view via: ${selector}`);
+          await sleep(2500);
+          return;
+        }
+      } catch {}
+    }
+
+    // Fallback: rewrite URL with view=list param
+    const currentUrl = page.url();
+    if (!currentUrl.includes("view=list") && currentUrl.includes("/marketplace/")) {
+      const separator = currentUrl.includes("?") ? "&" : "?";
+      const listUrl   = `${currentUrl}${separator}view=list`;
+      logger.info(`[marketplace] No list-view toggle for ${label} — retrying with ?view=list`);
+      try {
+        await page.goto(listUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await sleep(2000);
+      } catch {
+        logger.debug(`[marketplace] view=list URL fallback failed for ${label}`);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Wait for listing cards
   // ─────────────────────────────────────────────────────────────
 
   private async waitForCards(page: Page, label: string): Promise<number> {
-    // Step 1: wait for network to go idle so GraphQL has fired and resolved
     try {
       await page.waitForLoadState("networkidle", { timeout: 15_000 });
       logger.debug(`[marketplace] networkidle reached for ${label}`);
@@ -346,8 +451,8 @@ export class MarketplaceScraper extends BaseScraper {
     }
 
     await this.dismissModals(page);
+    await this.switchToListView(page, label);
 
-    // Step 2: poll for item link elements
     const selectorExpr = ITEM_LINK_SELECTORS
       .map(s => `document.querySelector(${JSON.stringify(s)}) !== null`)
       .join(" || ");
@@ -358,7 +463,6 @@ export class MarketplaceScraper extends BaseScraper {
       logger.info(`[marketplace] Cards appeared for ${label}: ${count}`);
       return count;
     } catch {
-      // Step 3: nudge scroll in case cards are below the fold / lazy-loaded
       logger.debug(`[marketplace] No cards yet for ${label} — nudging scroll`);
       await page.evaluate("window.scrollBy(0, 600)");
       await sleep(3000);
@@ -367,7 +471,7 @@ export class MarketplaceScraper extends BaseScraper {
 
       const count = await this.countCards(page);
       if (count > 0) {
-        logger.info(`[marketplace] Cards appeared after scroll nudge for ${label}: ${count}`);
+        logger.info(`[marketplace] Cards after scroll nudge for ${label}: ${count}`);
       } else {
         logger.info(`[marketplace] No cards found for ${label} after ${CARD_WAIT_MS / 1000}s`);
       }
@@ -394,16 +498,14 @@ export class MarketplaceScraper extends BaseScraper {
 
     for (let pass = 0; pass < SCROLL_PASSES; pass++) {
       await this.dismissModals(page);
-
       for (let i = 0; i < 3; i++) {
         await page.evaluate(`window.scrollBy(0, ${700 + Math.random() * 300})`);
         await sleep(350 + Math.random() * 250);
       }
       await sleep(1800 + Math.random() * 1200);
 
-      const h = (await page.evaluate("document.body.scrollHeight")) as number;
+      const h         = (await page.evaluate("document.body.scrollHeight")) as number;
       const cardCount = await this.countCards(page);
-
       logger.debug(`[marketplace] Scroll ${pass + 1}: ${cardCount} cards, height ${h}`);
 
       if (h === lastHeight) {
@@ -433,32 +535,34 @@ export class MarketplaceScraper extends BaseScraper {
       await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await sleep(2000 + Math.random() * 1000);
 
-      // Check for redirect to login (real auth failure)
       if (page.url().includes("login") || page.url().includes("checkpoint")) {
-        logger.warn(`[marketplace] Redirected to login on ${label} — session may have expired`);
-        return [];
+        logger.warn(`[marketplace] Redirected to login on ${label}`);
+        throw new Error("SESSION_EXPIRED");
       }
 
       await this.dismissModals(page);
 
-      // Auth block check (strict — no false positives)
       const initHtml = await page.content();
-      this.saveDebug(initHtml, `search_${city.slug}_${propertyType}`);
+      await this.saveDebug(initHtml, `search_${city.slug}_${propertyType}`, page);
 
-      if (this.isBlocked(initHtml, label)) {
-        return [];
+      // ── Fast-fail if page is served as logged-out ──────────────────
+      const sessionState = this.checkSessionInHtml(initHtml, label);
+      if (sessionState === "logged_out") {
+        logger.error(
+          "[marketplace] Aborting — session expired mid-run. " +
+          "Delete facebook-session.json and re-run."
+        );
+        throw new Error("SESSION_EXPIRED");
       }
 
-      // Log diagnostics
+      if (this.isBlocked(initHtml, label)) return [];
+
       const pageTitle = await page.title();
       logger.info(`[marketplace] ${label} — title: "${pageTitle}"`);
 
-      // Wait for cards with networkidle + polling + scroll nudge
       const cardCount = await this.waitForCards(page, label);
-
       if (cardCount === 0) {
-        // Save the HTML at this point for post-mortem analysis
-        this.saveDebug(await page.content(), `no_cards_${city.slug}_${propertyType}`);
+        await this.saveDebug(await page.content(), `no_cards_${city.slug}_${propertyType}`, page);
         return [];
       }
 
@@ -470,8 +574,13 @@ export class MarketplaceScraper extends BaseScraper {
       logger.info(`[marketplace] ${label}: ${items.length} cards`);
       return items;
     } catch (err: any) {
+      if (err.message === "SESSION_EXPIRED") throw err;
       logger.error(`[marketplace] Error on ${label}: ${err.message}`);
-      this.saveDebug(await page.content().catch(() => ""), `error_${city.slug}_${propertyType}`);
+      await this.saveDebug(
+        await page.content().catch(() => ""),
+        `error_${city.slug}_${propertyType}`,
+        page
+      );
       return [];
     }
   }
@@ -485,13 +594,11 @@ export class MarketplaceScraper extends BaseScraper {
     rawItems: Omit<RawListing, "source">[]
   ): Promise<RawListing[]> {
     const enriched: RawListing[] = [];
-
     for (const item of rawItems) {
       try {
         await sleep(DETAIL_DELAY_MS + Math.random() * 2000);
         await page.goto(item.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
         await sleep(1500 + Math.random() * 1000);
-
         const detailHtml = await page.content();
         if (!this.isBlocked(detailHtml, item.url)) {
           const detail = parseMarketplaceDetailPage(detailHtml);
@@ -505,7 +612,6 @@ export class MarketplaceScraper extends BaseScraper {
         enriched.push({ source: this.sourceName, ...item });
       }
     }
-
     return enriched;
   }
 
@@ -547,7 +653,7 @@ export class MarketplaceScraper extends BaseScraper {
       if (this.sessionExists()) {
         const sessionOk = await this.verifySession(page);
         if (!sessionOk) {
-          logger.warn("[marketplace] Session expired — re-logging in");
+          logger.warn("[marketplace] Session invalid — re-logging in");
           try { fs.unlinkSync(SESSION_FILE); } catch {}
           const ok = await this.login(page);
           if (!ok) return [];
@@ -571,6 +677,11 @@ export class MarketplaceScraper extends BaseScraper {
           const items = await this.scrapeTarget(page, city, propertyType);
           allRaw.push(...items);
         } catch (err: any) {
+          if (err.message === "SESSION_EXPIRED") {
+            logger.error("[marketplace] Session expired mid-run — wiping session file and stopping");
+            try { fs.unlinkSync(SESSION_FILE); } catch {}
+            break;
+          }
           logger.error(`[marketplace] Error on ${city.label}: ${err.message}`);
         }
 
@@ -604,11 +715,17 @@ export class MarketplaceScraper extends BaseScraper {
     return pageNumber <= 1;
   }
 
-  private saveDebug(html: string, label: string): void {
+  private async saveDebug(html: string, label: string, page?: Page): Promise<void> {
     try {
       const dir = path.resolve("logs");
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, `marketplace_${label}.html`), html, "utf-8");
+      if (page) {
+        await page.screenshot({
+          path:     path.join(dir, `marketplace_${label}.png`),
+          fullPage: false,
+        }).catch(() => {});
+      }
     } catch {}
   }
 }

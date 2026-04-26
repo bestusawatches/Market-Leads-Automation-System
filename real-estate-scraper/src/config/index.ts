@@ -31,12 +31,13 @@ export const config = {
   // ── Proxy ──────────────────────────────────────────────────────────────────
   // Set to null to scrape without a proxy (recommended for initial testing).
   // Format: "http://user:pass@host:port"
-  // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/
-
+  // http://uiqydusn:ayprrg8k3u13@23.95.150.145:6114/,
+  // proxyUrl: "http://fkmevgky:lmza5a3m78uw@216.10.27.159:6837",
+  // proxyUrl: "http://fkmevgky:lmza5a3m78uw@191.96.254.138:6185/",
   // proxyUrl: "http://fkmevgky:lmza5a3m78uw@107.172.163.27:6543",
-  proxyUrl: "",
+  // proxyUrl: "",
   
-  // proxyUrl:"",
+  proxyUrl: process.env.PROXY_URL || null,
 
   // https://ipv4.webshare.io/
   // ── Scraping limits ────────────────────────────────────────────────────────
@@ -95,6 +96,7 @@ export const config = {
       cleveland: "https://cleveland.craigslist.org/search/rea",
       toledo: "https://toledo.craigslist.org/search/rea",
     },
+    
     zillow:
       "https://www.zillow.com/oh/?searchQueryState=%7B%22filterState%22%3A%7B%22price%22%3A%7B%22max%22%3A300000%7D%7D%7D",
     crexi: {
@@ -135,5 +137,6 @@ export const config = {
     },
   },
 } as const;
+
 
 export type Config = typeof config;

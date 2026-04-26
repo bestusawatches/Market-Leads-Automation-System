@@ -12,14 +12,19 @@
     "db:studio": "prisma studio",
     "scrape": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts",
     "scrape:craigslist": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source craigslist",
-    "scrape:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source zillow",
     "scrape:all": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source all",
     "scrape:investorlift": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source investorlift",
     "scrape:offmarket": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source offmarket",
     "scrape:facebook": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source facebook",
     "scrape:marketplace": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source facebook_marketplace",
     "scrape:crexi": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source crexi",
-    "scrape:loopnet": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source loopnet"
+    "scrape:loopnet": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source loopnet",
+    "scrape:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --source zillow",
+    "enrich:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --enrich zillow",
+    "enrich:zillow:dry": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register index.ts --enrich zillow --dry-run",
+    "test:zillow": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register src/enrichers/zillow/test.ts",
+    "test:zillow:debug": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register src/enrichers/zillow/test.debug.ts",
+    "test:scraperapi": "PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium-browser node -r ./polyfill-file.js -r ts-node/register src/scrapers/loopnet/test-scraperapi.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.13.0",

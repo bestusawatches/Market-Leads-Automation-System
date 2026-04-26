@@ -32,6 +32,9 @@ async function main() {
   // const source = args.find(...) etc.
 }
 
+// src/enrichers/zillow/index.enricher.ts
+export { runZillowEnricher, enrichRawListings } from "./zillow.enricher";
+
 // ── Add to package.json scripts ─────────────────────────────────────────────
 // "enrich:zillow":     "node -r ./polyfill-file.js -r ts-node/register index.ts --enrich zillow",
 // "enrich:zillow:dry": "node -r ./polyfill-file.js -r ts-node/register index.ts --enrich zillow --dry-run",

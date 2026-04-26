@@ -29,7 +29,7 @@
   "dependencies": {
     "@prisma/client": "^5.13.0",
     "axios": "^1.6.8",
-    "cheerio": "^1.0.0-rc.12",
+    "cheerio": "^1.2.0",
     "dotenv": "^16.6.1",
     "fetch-blob": "^4.0.0",
     "p-limit": "^5.0.0",

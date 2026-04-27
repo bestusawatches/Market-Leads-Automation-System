@@ -39,10 +39,13 @@ export interface RawListing {
   zestimate?: number;
   zpid?: string;
   realtorEstimate?: number;
+  realtorEstimateLow?: number;
+  realtorEstimateHigh?: number;
   redfinEstimate?: number;
   propwireEstimate?: number;
   listedAt?: Date;
   daysOnZillow?: number;
+  daysOnMarket?: number;
 }
 
 /** Underwriting result computed by the scoring engine */

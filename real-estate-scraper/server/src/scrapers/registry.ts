@@ -16,6 +16,7 @@ import { MarketplaceScraper } from "./marketplace/marketplace.scraper";
 import { FacebookScraper } from "./facebook/facebook.scraper";
 import { CrexiScraper } from "./crexi/crexi.scraper";
 import { LoopNetScraper } from "./loopnet/loopnet.scraper";
+import { RealtorScraper } from "./realtor/realtor.scraper";
 import { config } from "../config";
 
 /** Each entry returns a ready-to-run BaseScraper instance */
@@ -55,6 +56,9 @@ export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
 
   // ── Zillow ────────────────────────────────────────────────────────────────
   zillow: () => new ZillowScraper(),
+
+  // ── Realtor.com ───────────────────────────────────────────────────────────
+  realtor: () => new RealtorScraper(),
 };
 
 // ── Source group aliases ──────────────────────────────────────────────────────

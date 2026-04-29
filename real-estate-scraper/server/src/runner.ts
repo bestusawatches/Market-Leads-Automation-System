@@ -62,18 +62,18 @@ export async function runScrapers(options: RunOptions): Promise<void> {
       continue;
     }
 
-    // ── Zillow enrichment (in-memory, before scoring and DB upsert) ───────
-    logger.info(
-      `[${key}] Running Zillow enrichment on ${rawListings.length} listings`
-    );
-    try {
-      rawListings = await enrichRawListings(rawListings);
-    } catch (err) {
-      // Enrichment failure is non-fatal — listings still save without zestimate
-      logger.error(
-        `[${key}] Zillow enrichment failed — continuing without zestimates: ${err}`
-      );
-    }
+    // ── Zillow enrichment disabled ─────────────────────────────────────
+    // logger.info(
+    //   `[${key}] Running Zillow enrichment on ${rawListings.length} listings`
+    // );
+    // try {
+    //   rawListings = await enrichRawListings(rawListings);
+    // } catch (err) {
+    //   // Enrichment failure is non-fatal — listings still save without zestimate
+    //   logger.error(
+    //     `[${key}] Zillow enrichment failed — continuing without zestimates: ${err}`
+    //   );
+    // }
 
     // Score listings — zestimate is now attached where Zillow found a match,
     // so scoreListings will use real ARV instead of falling back to price

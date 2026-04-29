@@ -1,16 +1,6 @@
 {
   "cookies": [
     {
-      "name": "fr",
-      "value": "0hRcM1wF17RLHQtoM..Bp5fED..AAA.0.0.Bp66Dj.AWeY3-4FCtmZHr-33ULaBaxl9HU",
-      "domain": ".facebook.com",
-      "path": "/",
-      "expires": 1784825827.603036,
-      "httpOnly": true,
-      "secure": true,
-      "sameSite": "None"
-    },
-    {
       "name": "datr",
       "value": "A_HlaboNNO0iz02JXH1mQse2",
       "domain": ".facebook.com",
@@ -35,7 +25,7 @@
       "value": "1366x900",
       "domain": ".facebook.com",
       "path": "/",
-      "expires": 1777655039,
+      "expires": 1778008877,
       "httpOnly": false,
       "secure": true,
       "sameSite": "Lax"
@@ -61,16 +51,6 @@
       "sameSite": "None"
     },
     {
-      "name": "locale",
-      "value": "en_GB",
-      "domain": ".facebook.com",
-      "path": "/",
-      "expires": 1777281938.696963,
-      "httpOnly": false,
-      "secure": true,
-      "sameSite": "None"
-    },
-    {
       "name": "ps_l",
       "value": "1",
       "domain": ".facebook.com",
@@ -89,6 +69,16 @@
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
+    },
+    {
+      "name": "fr",
+      "value": "0hRcM1wF17RLHQtoM..Bp5fED..AAA.0.0.Bp8Qa1.AWfRrx12JztNeM8J_6VSxofqV6w",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1785179573.98412,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
     }
   ],
   "origins": [
@@ -97,7 +87,7 @@
       "localStorage": [
         {
           "name": "hb_timestamp",
-          "value": "1777049828785"
+          "value": "1777403583610"
         },
         {
           "name": "_oz_bandwidthAndTTFBSamples",
@@ -105,11 +95,11 @@
         },
         {
           "name": "signal_flush_timestamp",
-          "value": "1777049828867"
+          "value": "1777403583638"
         },
         {
           "name": "Session",
-          "value": "xj9k1o:1777050344070"
+          "value": "5wdqkp:1777404169545"
         },
         {
           "name": "_oz_bandwidthEstimate",
@@ -117,7 +107,7 @@
         },
         {
           "name": "banzai:last_storage_flush",
-          "value": "1777049829628.1"
+          "value": "1777403589762.7"
         }
       ]
     }

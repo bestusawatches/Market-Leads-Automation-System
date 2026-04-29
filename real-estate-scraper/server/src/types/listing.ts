@@ -42,8 +42,11 @@ export interface RawListing {
   realtorEstimateLow?: number;
   realtorEstimateHigh?: number;
   redfinEstimate?: number;
+  state?: string;
+  city?: string;
   propwireEstimate?: number;
   listedAt?: Date;
+  listedDate?: number;
   daysOnZillow?: number;
   daysOnMarket?: number;
 }

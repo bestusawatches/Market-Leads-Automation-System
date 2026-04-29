@@ -34,8 +34,8 @@ export const config = {
   proxyUrl: process.env.PROXY_URL || null,
 
   // ── Global scraping limits ────────────────────────────────────────────────
-  maxPages:     Number(process.env.MAX_PAGES        ?? 5),
-  maxListings:  Number(process.env.MAX_LISTINGS     ?? 20),
+  maxPages:     Number(process.env.MAX_PAGES        ?? 10),
+  maxListings:  Number(process.env.MAX_LISTINGS     ?? 100),
   requestDelay: Number(process.env.REQUEST_DELAY_MS ?? 2_000),
 
   // ── Filtering criteria ────────────────────────────────────────────────────
@@ -61,6 +61,18 @@ export const config = {
 
   // ── Sources ───────────────────────────────────────────────────────────────
   sources: {
+    
+     propwire: {
+      markets: [
+        { name: "Columbus, OH",  state: "OH", stateName: "Ohio",      city: "Columbus"  },
+        { name: "Cleveland, OH", state: "OH", stateName: "Ohio",      city: "Cleveland" },
+        { name: "Toledo, OH",    state: "OH", stateName: "Ohio",      city: "Toledo"    },
+        { name: "Milwaukee, WI", state: "WI", stateName: "Wisconsin", city: "Milwaukee" },
+      ] as Array<{ name: string; state: string; stateName: string; city?: string }>,
+
+      maxPages:      Number(process.env.PROPWIRE_MAX_PAGES     ?? 10),
+      detailLimit:   Number(process.env.PROPWIRE_DETAIL_LIMIT ?? 20),
+    },
 
     craigslist: {
       milwaukee: "https://milwaukee.craigslist.org/search/rea",

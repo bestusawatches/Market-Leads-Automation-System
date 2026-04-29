@@ -46,8 +46,9 @@ export async function upsertListing(
       ...data,
       // Never overwrite enrichment data if already populated
       zestimate: payload.zestimate ?? undefined,
-      realtorEstimate: undefined,
-      redfinEstimate: undefined,
+      realtorEstimate: payload.realtorEstimate ?? undefined,
+      redfinEstimate: payload.redfinEstimate ?? undefined,
+      propwireEstimate: payload.propwireEstimate ?? undefined,
     },
   });
 }

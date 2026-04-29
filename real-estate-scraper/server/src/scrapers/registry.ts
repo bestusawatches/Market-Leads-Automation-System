@@ -18,6 +18,7 @@ import { CrexiScraper } from "./crexi/crexi.scraper";
 import { LoopNetScraper } from "./loopnet/loopnet.scraper";
 import { RealtorScraper } from "./realtor/realtor.scraper";
 import { RedfinScraper } from "./redfin/redfin.scraper";
+import { PropwireScraper } from "./propwire/propwire.scraper";
 import { config } from "../config";
 
 /** Each entry returns a ready-to-run BaseScraper instance */
@@ -62,7 +63,10 @@ export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
   realtor: () => new RealtorScraper(),
 
   // ── Redfin ────────────────────────────────────────────────────────────────
-  redfin: () => new RedfinScraper()
+  redfin: () => new RedfinScraper(),
+
+  // ── Propwire ─────────────────────────────────────────────────────────────
+  propwire: () => new PropwireScraper()
 };
 
 // ── Source group aliases ──────────────────────────────────────────────────────

@@ -75,8 +75,9 @@ Available scrapers:
 - **`investorlift/`** - Scrapes InvestorLift platform
 - **`loopnet/`** - Scrapes LoopNet commercial listings
 - **`marketplace/`** - Scrapes Facebook Marketplace
-- **`offmarket/`** - Scrapes off-market listings
- - **`zillow/`** - Scrapes Zillow search pages (parser + scraper). The registry exposes `zillow` so you can run it via the CLI (`--source zillow`) or with the npm script `scrape:zillow`.
+- **`offmarket/`** - Scrapes off-market listings using AJAX "Load More" and detail page for date extraction. Applies a 30-day date filter, prioritizing the detail page date, and includes listings with missing/unparseable dates (fail-open).
+- **`redfin/`** - Scrapes Redfin using the internal GIS JSON API (not HTML). Applies strict location filtering by state and a 30-day date filter. Uses AVM JSON APIs for estimate enrichment, with HTML fallback only for debugging. Handles Oxylabs proxy and XSSI guard. Location mismatches are rejected based on state code in the URL.
+- **`zillow/`** - Scrapes Zillow search pages (parser + scraper). The registry exposes `zillow` so you can run it via the CLI (`--source zillow`) or with the npm script `scrape:zillow`.
 
 #### `types/listing.ts`
 TypeScript type definitions:
@@ -103,23 +104,25 @@ Contains output files from scraping runs:
 
 ## Data Flow
 
-1. **CLI Execution**: `index.ts` parses arguments and calls `runScrapers` in `runner.ts`
-2. **Scraper Orchestration**: `runner.ts` iterates through selected scrapers from `registry.ts`
-3. **Scraping**: Each scraper extends `BaseScraper` and implements `scrapePage` to extract raw listings
-4. **Parsing**: Site-specific parsers convert HTML to structured `RawListing` objects
-5. **Filtering**: `BaseScraper` applies relevance filters based on keywords, price, and location
-6. **Enrichment**: `runner.ts` calls Zillow enricher to add zestimates to listings
-7. **Scoring**: `runner.ts` calculates deal scores based on price vs. zestimate ratios
-8. **Storage**: `repository.ts` upserts listings to PostgreSQL via Prisma
+1. **CLI Execution**: `index.ts` parses arguments and calls `runScrapers` in `runner.ts`. Supports `--enrich` flag for optional enrichment runs.
+2. **Scraper Orchestration**: `runner.ts` iterates through selected scrapers from `registry.ts`.
+3. **Scraping**: Each scraper extends `BaseScraper` and implements `scrapePage` to extract raw listings. Redfin and Offmarket scrapers use JSON APIs and AJAX, not HTML scraping.
+4. **Parsing**: Site-specific parsers convert HTML or JSON to structured `RawListing` objects. Redfin parser handles XSSI guard and enveloped fields.
+5. **Filtering**: `BaseScraper` applies relevance filters based on keywords, price, location, and recency (30-day window for Redfin/Offmarket).
+6. **Enrichment**: Zillow enrichment is available as a separate step via the `--enrich zillow` CLI flag. It is not run automatically after scraping.
+7. **Scoring**: `runner.ts` calculates deal scores based on price vs. zestimate ratios.
+8. **Storage**: `repository.ts` upserts listings to PostgreSQL via Prisma. Prisma validation is enforced (e.g., squareFeet must be a number or null).
 
-## Key Design Patterns
+## Key Design Patterns & Improvements
 
 - **Factory Pattern**: `registry.ts` provides scraper factories for runtime instantiation
 - **Template Method**: `BaseScraper` defines the scraping workflow with extensible `scrapePage`
 - **Repository Pattern**: `repository.ts` abstracts database operations
 - **Singleton**: Prisma client in `client.ts`
-- **Strategy Pattern**: Different parsers for different site layouts
+- **Strategy Pattern**: Different parsers for different site layouts and data sources (HTML, JSON, AJAX)
 - **Observer Pattern**: Logger utility for consistent logging across modules
+- **Strict Validation**: Parsers now ensure only valid data types (e.g., numbers for squareFeet) are passed to the database, preventing Prisma errors
+- **Fail-Open Filtering**: Offmarket and Redfin scrapers include listings with missing/unparseable dates to avoid silent data loss
 
 ## Dependencies
 
@@ -130,3 +133,4 @@ Contains output files from scraping runs:
 - **Yargs**: CLI argument parsing
 - **Axios**: HTTP requests for enrichment APIs
 - **Puppeteer Extra**: Stealth plugins for anti-bot evasion
+- **Oxylabs Proxy**: Used for Redfin GIS/AVM API access and bypassing WAF

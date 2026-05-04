@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Header, PageContainer } from '@/components/layout';
 import { ListingsTable, ScraperControls } from '@/components/listings';
+import { ExportButton } from '@/components/common';
 import { FilterBar } from '@/components/filters';
 import { useListings } from '@/hooks';
 
@@ -49,7 +50,7 @@ export const ListingsPage: React.FC = () => {
         </div>
 
         {/* Refresh and Additional Controls */}
-        <div className="mb-6 flex gap-4 items-center">
+        <div className="mb-6 flex gap-4 items-center flex-wrap">
           <button
             onClick={handleRefresh}
             disabled={loading}
@@ -67,6 +68,12 @@ export const ListingsPage: React.FC = () => {
               </>
             )}
           </button>
+          <ExportButton 
+            data={filteredListings} 
+            filename="listings" 
+            dataType="listings"
+            disabled={loading}
+          />
           {autoRefresh && (
             <span className="text-sm text-blue-600 font-medium flex items-center gap-2">
               <span className="inline-block h-2 w-2 bg-blue-600 rounded-full animate-pulse"></span>

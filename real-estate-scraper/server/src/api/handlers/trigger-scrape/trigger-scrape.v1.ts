@@ -8,7 +8,8 @@ import { logger } from "../../../utils/logger";
  * @route POST /api/v1/scrape/trigger
  * @param {string} [source=all] - Optional source to scrape (all, specific source, or comma-separated list)
  * @returns {Object} { status, message, scrapingStartedAt }
- */
+*/
+
 export const triggerScrapeHandler = async (
   req: Request,
   res: Response,

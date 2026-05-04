@@ -1,6 +1,6 @@
 import React from 'react';
 import { Header, PageContainer } from '@/components/layout';
-import { Card } from '@/components/common';
+import { Card, ExportButton } from '@/components/common';
 import { useProperties } from '@/hooks';
 
 export const PropertiesPage: React.FC = () => {
@@ -14,14 +14,30 @@ export const PropertiesPage: React.FC = () => {
       />
 
       <div className="p-8">
-        <div className="mb-6 flex gap-4">
+        <div className="mb-6 flex gap-4 flex-wrap items-center">
           <button
             onClick={refetch}
             disabled={loading}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 font-medium"
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium flex items-center gap-2"
           >
-            {loading ? 'Refreshing...' : 'Refresh Properties'}
+            {loading ? (
+              <>
+                <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                Refreshing...
+              </>
+            ) : (
+              <>
+                <span>🔄</span>
+                Refresh Properties
+              </>
+            )}
           </button>
+          <ExportButton 
+            data={properties} 
+            filename="properties" 
+            dataType="properties"
+            disabled={loading}
+          />
         </div>
 
         {error && (

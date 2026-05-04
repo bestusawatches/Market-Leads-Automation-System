@@ -73,3 +73,60 @@ export async function triggerScraper(source: string = "all"): Promise<any> {
   });
   return response;
 }
+
+/**
+ * Export utilities for downloading data as CSV or JSON
+ */
+
+export function exportToCSV<T extends Record<string, any>>(
+  data: T[],
+  filename: string,
+  columns?: (keyof T)[]
+): void {
+  if (data.length === 0) {
+    console.warn("No data to export");
+    return;
+  }
+
+  // Determine columns
+  const cols = columns || (Object.keys(data[0]) as (keyof T)[]);
+
+  // Create CSV header
+  const header = cols.map((col) => `"${String(col)}"`).join(",");
+
+  // Create CSV rows
+  const rows = data.map((row) =>
+    cols
+      .map((col) => {
+        const value = row[col];
+        if (value === null || value === undefined) return "";
+        const stringValue = String(value);
+        // Escape quotes and wrap in quotes if contains comma or newline
+        if (stringValue.includes(",") || stringValue.includes('"') || stringValue.includes("\n")) {
+          return `"${stringValue.replace(/"/g, '""')}"`;
+        }
+        return `"${stringValue}"`;
+      })
+      .join(",")
+  );
+
+  const csv = [header, ...rows].join("\n");
+  downloadFile(csv, filename, "text/csv");
+}
+
+export function exportToJSON<T>(data: T[], filename: string): void {
+  const json = JSON.stringify(data, null, 2);
+  downloadFile(json, filename, "application/json");
+}
+
+function downloadFile(content: string, filename: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

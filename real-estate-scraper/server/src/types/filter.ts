@@ -234,8 +234,7 @@ export function matchesFilter(
   // ── Keyword matching ─────────────────────────────────────────────────────
   if (
     criteria.description &&
-    (filter.keywords?.length || 0) > 0 ||
-    (filter.excludeKeywords?.length || 0) > 0
+    ((filter.keywords?.length || 0) > 0 || (filter.excludeKeywords?.length || 0) > 0)
   ) {
     const description = caseSensitive ? criteria.description : criteria.description.toLowerCase();
 

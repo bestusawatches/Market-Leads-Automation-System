@@ -1,0 +1,77 @@
+/**
+ * Normalize Investorlift addresses to Zillow format
+ * 
+ * Zillow format: "Street Address, City, State ZipCode, City, State, ZipCode"
+ * Example: "1035 Lanedale St NW, Massillon, OH 44647, Massillon, OH, 44647"
+ * 
+ * Note: Investorlift often lacks street address, so we format as best as possible
+ */
+
+import { RawListing } from "../../../types/listing";
+
+interface ZillowAddressComponents {
+  street?: string;
+  city?: string;
+  state?: string;
+  county?: string;
+  zip?: string;
+}
+
+/**
+ * Extract address components from Investorlift data
+ * Investorlift format: "City, County, State, Zip"
+ */
+export function extractZillowAddressComponents(
+  investorliftAddress: string | undefined
+): ZillowAddressComponents {
+  if (!investorliftAddress) {
+    return {};
+  }
+
+  const parts = investorliftAddress.split(",").map((p) => p.trim());
+
+  // Typically: ["City", "County", "State", "Zip"]
+  let city: string | undefined;
+  let county: string | undefined;
+  let state: string | undefined;
+  let zip: string | undefined;
+
+  if (parts.length >= 4) {
+    city = parts[0];
+    county = parts[1];
+    state = parts[2];
+    zip = parts[3];
+  } else if (parts.length === 3) {
+    city = parts[0];
+    state = parts[1];
+    zip = parts[2];
+  }
+
+  return { city, state, county, zip };
+}
+
+/**
+ * Format address in Zillow style
+ * Since Investorlift lacks street address, we use: "City, State ZipCode, City, State, ZipCode"
+ */
+export function formatZillowAddress(components: ZillowAddressComponents): string | undefined {
+  const { city, state, zip } = components;
+
+  if (!city || !state) {
+    return undefined;
+  }
+
+  // Without street, format: "City, State ZipCode, City, State, ZipCode"
+  const firstPart = zip ? `${city}, ${state} ${zip}` : `${city}, ${state}`;
+  const secondPart = zip ? `${city}, ${state}, ${zip}` : `${city}, ${state}`;
+
+  return `${firstPart}, ${secondPart}`;
+}
+
+/**
+ * Normalize Investorlift listing to Zillow address format
+ */
+export function normalizeToZillowFormat(listing: RawListing): string | undefined {
+  const components = extractZillowAddressComponents(listing.address);
+  return formatZillowAddress(components);
+}

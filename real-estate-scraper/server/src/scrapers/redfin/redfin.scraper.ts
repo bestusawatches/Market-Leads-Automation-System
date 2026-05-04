@@ -380,11 +380,10 @@ function slugify(s: string): string {
 export class RedfinScraper extends BaseScraper {
   readonly sourceName = "redfin";
 
-  private readonly markets:           readonly Market[];
-  private readonly uipt:              readonly number[];
-  private readonly maxPagesPerMarket: number;
-  private readonly pageSize:          number;
-  private readonly detailFetchLimit:  number;
+  private readonly markets:          readonly Market[];
+  private readonly uipt:             readonly number[];
+  private readonly pageSize:         number;
+  private readonly detailFetchLimit: number;
 
   private allListings: RawListing[] = [];
 
@@ -394,13 +393,12 @@ export class RedfinScraper extends BaseScraper {
     const rc = config.sources.redfin;
     this.markets           = rc.markets;
     this.uipt              = rc.uipt;
-    this.maxPagesPerMarket = rc.maxPagesPerMarket;
     this.pageSize          = rc.pageSize;
     this.detailFetchLimit  = rc.detailFetchLimit;
 
     logger.info(
       `[redfin] ${this.markets.length} market(s) | ` +
-      `up to ${this.maxPagesPerMarket} page(s)/market | ` +
+      `up to ${this.options.maxPages} page(s)/market | ` +
       `pageSize=${this.pageSize} | ` +
       `${this.detailFetchLimit} detail fetch(es)`
     );
@@ -446,7 +444,7 @@ export class RedfinScraper extends BaseScraper {
       );
       let totalCount = Infinity;
 
-      for (let page = 0; page < this.maxPagesPerMarket; page++) {
+      for (let page = 0; page < this.options.maxPages; page++) {
         if (this.results.length >= this.options.maxListings) break;
 
         const start = page * this.pageSize;
@@ -464,7 +462,7 @@ export class RedfinScraper extends BaseScraper {
         );
 
         logger.info(
-          `[redfin] ${market.name} page ${page + 1}/${this.maxPagesPerMarket} ` +
+          `[redfin] ${market.name} page ${page + 1}/${this.options.maxPages} ` +
           `(start=${start}) → ${gisUrl}`
         );
 
@@ -544,7 +542,7 @@ export class RedfinScraper extends BaseScraper {
 
         if (listings.length === 0 || allStale) break;
 
-        if (page + 1 < this.maxPagesPerMarket) {
+        if (page + 1 < this.options.maxPages) {
           await sleep(jitter(BETWEEN_PAGE_MS));
         }
       }

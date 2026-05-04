@@ -8,29 +8,18 @@
 //   finds the listings array and maps it to RawListing objects.
 //
 //   Known Crexi API shapes:
-//     { data: { assets: [ { id, name, askingPrice, ... } ] } }
+//     { data: { assets: [ { id, name, askingPrice, address: { city, state } } ] } }
 //     { assets: [ ... ] }
 //     { results: [ ... ] }
 //
+//   ⚠  IMPORTANT: Crexi's API wraps location inside a nested `address` object:
+//        asset.address.city  /  asset.address.stateCode  /  asset.address.state
+//      The parser normalises all known shapes into flat city/state strings.
+//
 // PATH B — __NEXT_DATA__ JSON (not applicable — Crexi is Angular, not Next.js)
 //   Kept for future compatibility but will always return empty in practice.
-//   Reuses the same JSON tree-walker as Path A.
 //
-// PATH C — HTML / cheerio using Crexi's actual Angular custom elements:
-//
-//   <crx-sales-property-tile id="search-item-NNNNNN">
-//     <cui-card>
-//       <a class="cui-card-cover-link" href="/properties/...">  ← URL
-//       <span data-cy="propertyPrice">$1,354,000</span>         ← Price
-//       <h5   data-cy="propertyName">Title here</h5>            ← Title
-//       <div  data-cy="propertyDescription">Multifamily…</div>  ← Desc/type
-//       <h4   data-cy="propertyAddress">
-//           123 Main St
-//           <span>Columbus, OH 43215</span>                      ← City/State
-//       </h4>
-//     </cui-card>
-//   </crx-sales-property-tile>
-//
+// PATH C — HTML / cheerio using Crexi's Angular custom elements.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as cheerio from "cheerio";
@@ -39,57 +28,151 @@ import * as path from "path";
 import { RawListing, PropertyType } from "../../types/listing";
 import { logger } from "../../utils/logger";
 
-// ── Type helpers ───────────────────────────────────────────────────────────
+// ── Nested address shape returned by api.crexi.com ────────────────────────
+
+interface CrxAddress {
+  street?:       string;
+  streetAddress?: string;
+  address1?:     string;
+  address2?:     string;
+  city?:         string;
+  cityName?:     string;
+  state?:        string;
+  stateCode?:    string;
+  stateName?:    string;
+  zip?:          string;
+  zipCode?:      string;
+  postalCode?:   string;
+  county?:       string;
+  country?:      string;
+}
+
+// ── Raw asset shape from api.crexi.com/assets/search ──────────────────────
 
 interface CrxRaw {
+  // Identity
   id?:           string | number;
   name?:         string;
   title?:        string;
-  address?:      string;
+  slug?:         string;
+  url?:          string;
+
+  // Location — flat (legacy / HTML path)
+  address?:      string | CrxAddress;   // may be string OR nested object
   city?:         string;
+  cityName?:     string;
   state?:        string;
+  stateCode?:    string;
+  stateName?:    string;
   zip?:          string;
+  postalCode?:   string;
+  latitude?:     number;
+  longitude?:    number;
+
+  // Financials
   askingPrice?:  number;
   price?:        number;
   listPrice?:    number;
-  propertyType?: string;
-  type?:         string;
-  squareFeet?:   number;
-  sqft?:         number;
-  buildingSize?: number;
-  bedrooms?:     number;
-  bathrooms?:    number;
   capRate?:      number;
   noi?:          number;
-  description?:  string;
-  summary?:      string;
-  brokerName?:   string;
-  brokerPhone?:  string;
-  slug?:         string;
-  url?:          string;
-  latitude?:     number;
-  longitude?:    number;
-  units?:        number;
-  yearBuilt?:    number;
-  lotSize?:      number;
-  status?:       string;
+  noiAnnual?:    number;
+  grossRevenue?: number;
+
+  // Property type
+  propertyType?: string;
+  type?:         string;
+  assetType?:    string;
+  listingType?:  string;
+  assetClass?:   string;
+  category?:     string;
+
+  // Size
+  squareFeet?:      number;
+  sqft?:            number;
+  buildingSize?:    number;
+  buildingSquareFeet?: number;
+  totalSquareFeet?: number;
+  lotSize?:         number;
+  lotSqft?:         number;
+
+  // Unit counts
+  units?:       number;
+  unitCount?:   number;
+  totalUnits?:  number;
+  bedrooms?:    number;
+  bathrooms?:   number;
+  yearBuilt?:   number;
+
+  // Text
+  description?: string;
+  summary?:     string;
+  teaser?:      string;
+
+  // Broker
+  brokerName?:  string;
+  brokerPhone?: string;
+
+  // Status
+  status?:      string;
 }
 
-// ── Normalise property type ────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function normalisePropertyType(raw: string | undefined): PropertyType {
   if (!raw) return "unknown";
   const t = raw.toLowerCase();
-  if (t.includes("single") || t.includes("sfr") || t.includes("sfh"))                     return "single_family";
-  if (t.includes("duplex"))                                                                 return "duplex";
-  if (t.includes("multi") || t.includes("apartment") || t.includes("residential income")) return "multi_family";
-  if (t.includes("condo"))                                                                  return "condo";
-  if (t.includes("town"))                                                                   return "townhouse";
+  if (t.includes("single") || t.includes("sfr") || t.includes("sfh"))                       return "single_family";
+  if (t.includes("duplex"))                                                                   return "duplex";
+  if (t.includes("multi") || t.includes("apartment") || t.includes("residential income"))   return "multi_family";
+  if (t.includes("condo"))                                                                    return "condo";
+  if (t.includes("town"))                                                                     return "townhouse";
   return "unknown";
 }
 
+/**
+ * Extract flat city + state strings from a CrxRaw record.
+ * Handles both:
+ *   - Flat fields:  r.city / r.stateCode / r.state
+ *   - Nested object: r.address.city / r.address.stateCode / r.address.state
+ */
+function extractCityState(r: CrxRaw): { city: string | undefined; state: string | undefined } {
+  // Start with flat fields
+  let city:  string | undefined = r.city  ?? r.cityName;
+  let state: string | undefined = r.state ?? r.stateCode ?? r.stateName;
+
+  // Override / fill from nested address object
+  if (r.address && typeof r.address === "object") {
+    const a = r.address as CrxAddress;
+    city  = city  ?? a.city  ?? a.cityName;
+    state = state ?? a.state ?? a.stateCode ?? a.stateName;
+  }
+
+  return { city, state };
+}
+
+/**
+ * Build a human-readable address string. Prefers the nested address object
+ * so that street + city + state + zip are all included when available.
+ */
 function buildAddress(r: CrxRaw): string | undefined {
-  const parts = [r.address, r.city, r.state, r.zip].filter(Boolean);
+  if (r.address && typeof r.address === "object") {
+    const a = r.address as CrxAddress;
+    const street = a.street ?? a.streetAddress ?? a.address1 ?? "";
+    const city   = a.city   ?? a.cityName ?? r.city ?? r.cityName ?? "";
+    const state  = a.state  ?? a.stateCode ?? a.stateName ?? r.state ?? r.stateCode ?? r.stateName ?? "";
+    const zip    = a.zip    ?? a.zipCode ?? a.postalCode ?? r.zip ?? r.postalCode ?? "";
+    const parts  = [street, city, state, zip].filter(Boolean);
+    return parts.length > 0 ? parts.join(", ") : undefined;
+  }
+
+  // Flat string address
+  const { city, state } = extractCityState(r);
+  const parts = [
+    typeof r.address === "string" ? r.address : undefined,
+    city,
+    state,
+    r.zip ?? r.postalCode,
+  ].filter(Boolean);
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
@@ -102,13 +185,20 @@ function buildUrl(r: CrxRaw, fallback: string): string {
 
 function rawToListing(r: CrxRaw, sourceUrl: string, source: string): RawListing | null {
   const price = r.askingPrice ?? r.price ?? r.listPrice ?? undefined;
-  const sqft  = r.squareFeet  ?? r.sqft  ?? r.buildingSize ?? undefined;
+  const sqft  = r.squareFeet  ?? r.sqft  ?? r.buildingSize
+             ?? r.buildingSquareFeet ?? r.totalSquareFeet ?? undefined;
 
+  const { city, state } = extractCityState(r);
   const address  = buildAddress(r);
-  const propType = normalisePropertyType(r.propertyType ?? r.type);
-  const title    = r.name ?? r.title ?? r.description?.slice(0, 100) ?? "";
-  const url      = buildUrl(r, sourceUrl);
+  const location = [city, state].filter(Boolean).join(", ") || address;
 
+  const propType = normalisePropertyType(
+    r.propertyType ?? r.type ?? r.assetType ?? r.listingType ?? r.assetClass ?? r.category
+  );
+  const title = r.name ?? r.title ?? (r.description ?? "").slice(0, 100);
+  const url   = buildUrl(r, sourceUrl);
+
+  // Require at least a price OR an address to emit a listing
   if (!price && !address) return null;
 
   return {
@@ -117,12 +207,12 @@ function rawToListing(r: CrxRaw, sourceUrl: string, source: string): RawListing 
     title:        title.replace(/\s+/g, " ").trim().slice(0, 200),
     price,
     address,
-    location:     [r.city, r.state].filter(Boolean).join(", ") || address,
+    location,
     propertyType: propType,
     bedrooms:     r.bedrooms,
     bathrooms:    r.bathrooms,
     squareFeet:   sqft ? Math.round(sqft) : undefined,
-    description:  r.description ?? r.summary ?? "",
+    description:  r.description ?? r.summary ?? r.teaser ?? "",
     ownerName:    r.brokerName,
     ownerPhone:   r.brokerPhone,
   };
@@ -130,11 +220,7 @@ function rawToListing(r: CrxRaw, sourceUrl: string, source: string): RawListing 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON tree-walker — finds a listings array anywhere in the JSON tree.
-//
-// Used for both intercepted API responses (Path A) and __NEXT_DATA__ (Path B).
-//
-// "assets" is listed first because that is Crexi's actual API field name:
-//   { data: { assets: [ { id, name, askingPrice, ... } ] } }
+// "assets" is first because that is Crexi's primary API field name.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function findListingsArray(node: any, depth = 0): CrxRaw[] | null {
@@ -149,7 +235,6 @@ function findListingsArray(node: any, depth = 0): CrxRaw[] | null {
     return null;
   }
 
-  // "assets" must be first — it is Crexi's actual API field name
   const priorityKeys = [
     "assets",           // Crexi API: { data: { assets: [...] } }
     "listings",
@@ -180,13 +265,12 @@ function findListingsArray(node: any, depth = 0): CrxRaw[] | null {
 function isListingObject(obj: any): boolean {
   if (typeof obj !== "object" || obj === null) return false;
   const listingFields = [
-    "askingPrice", "listPrice", "price", "address", "city",
-    "propertyType", "squareFeet", "slug", "capRate",
+    "askingPrice", "listPrice", "price", "address", "city", "cityName",
+    "stateCode", "propertyType", "assetType", "squareFeet", "slug", "capRate",
   ];
   return listingFields.some((f) => f in obj);
 }
 
-// Shared JSON → RawListing converter used by both Path A and Path B
 function parseViaJSON(json: any, sourceUrl: string, source: string, label: string): RawListing[] {
   if (!json) return [];
 
@@ -198,6 +282,15 @@ function parseViaJSON(json: any, sourceUrl: string, source: string, label: strin
 
   logger.info(`[crexi-parser] ${label}: found ${rawListings.length} raw items`);
 
+  // Debug: log the first item's keys so we can see the actual API shape
+  if (rawListings.length > 0) {
+    logger.debug(`[crexi-parser] ${label}: first item keys → ${Object.keys(rawListings[0]).join(", ")}`);
+    const firstAddr = (rawListings[0] as any).address;
+    if (firstAddr && typeof firstAddr === "object") {
+      logger.debug(`[crexi-parser] ${label}: address object keys → ${Object.keys(firstAddr).join(", ")}`);
+    }
+  }
+
   const results: RawListing[] = [];
   for (const r of rawListings) {
     const listing = rawToListing(r, sourceUrl, source);
@@ -207,21 +300,7 @@ function parseViaJSON(json: any, sourceUrl: string, source: string, label: strin
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATH C — HTML / cheerio — Crexi Angular custom element selectors
-//
-// Crexi renders as an Angular SPA. The key elements visible in the fully
-// rendered DOM are:
-//
-//   <crx-sales-property-tile id="search-item-NNNNNN">
-//     …
-//     <span data-cy="propertyPrice">$555,000</span>
-//     <h5   data-cy="propertyName">7 Duplex's 15 Cap Rate Cleveland</h5>
-//     <div  data-cy="propertyDescription">Multifamily • 7 Units • …</div>
-//     <h4   data-cy="propertyAddress">
-//         7 LOCATIONS
-//         <span>Cleveland, OH 44112</span>
-//     </h4>
-//     <a class="cui-card-cover-link" href="/properties/2431987/ohio-…">
+// PATH C — HTML / cheerio
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractPriceFromText(text: string): number | undefined {
@@ -246,8 +325,6 @@ function extractSqftFromText(text: string): number | undefined {
 }
 
 function parseViaHTML(html: string, sourceUrl: string, source: string): RawListing[] {
-  // Guard: if this looks like a CF challenge page that slipped through, bail early.
-  // This catches the case where waitForCloudflare times out and returns true anyway.
   if (
     html.includes("challenges.cloudflare.com") ||
     html.includes("cf-browser-verification") ||
@@ -261,17 +338,14 @@ function parseViaHTML(html: string, sourceUrl: string, source: string): RawListi
   const results: RawListing[] = [];
   const seen = new Set<string>();
 
-  // ── 1. Primary: Crexi Angular tiles ─────────────────────────────────────
   let cards = $("crx-sales-property-tile[id^='search-item-']");
   let selectorUsed = "crx-sales-property-tile[id^='search-item-']";
 
-  // ── 2. Fallback A: cui-card with a cover link ────────────────────────────
   if (cards.length === 0) {
     cards = $("cui-card:has(a.cui-card-cover-link)");
     selectorUsed = "cui-card:has(a.cui-card-cover-link)";
   }
 
-  // ── 3. Fallback B: any element containing a data-cy="propertyPrice" ──────
   if (cards.length === 0) {
     cards = $("[data-cy='propertyPrice']")
       .map((_, el) => $(el).closest("cui-card, crx-sales-property-tile, article").get(0))
@@ -279,15 +353,12 @@ function parseViaHTML(html: string, sourceUrl: string, source: string): RawListi
     selectorUsed = "ancestor of [data-cy=propertyPrice]";
   }
 
-  // ── 4. Last-resort: collect all property hrefs as stub listings ──────────
   if (cards.length === 0) {
     logger.warn("[crexi-parser] Angular tile selectors missed — collecting property hrefs as stubs");
     $("a[href*='/properties/'][href*='-']").each((_, el) => {
       const rawHref = $(el).attr("href") ?? "";
       if (!rawHref || rawHref === "/" || rawHref.includes("?")) return;
-      const url = rawHref.startsWith("http")
-        ? rawHref
-        : `https://www.crexi.com${rawHref}`;
+      const url = rawHref.startsWith("http") ? rawHref : `https://www.crexi.com${rawHref}`;
       if (seen.has(url) || url === sourceUrl) return;
       seen.add(url);
       results.push({
@@ -307,38 +378,25 @@ function parseViaHTML(html: string, sourceUrl: string, source: string): RawListi
   cards.each((_, el) => {
     const tile = $(el);
 
-    // ── Cover link / URL ──────────────────────────────────────────────────
     const linkEl  = tile.find("a.cui-card-cover-link").first();
     const rawHref = linkEl.attr("href") ?? "";
     if (!rawHref) return;
-    const url = rawHref.startsWith("http")
-      ? rawHref
-      : `https://www.crexi.com${rawHref}`;
+    const url = rawHref.startsWith("http") ? rawHref : `https://www.crexi.com${rawHref}`;
     if (seen.has(url)) return;
     seen.add(url);
 
-    // ── Price ─────────────────────────────────────────────────────────────
     const priceText = tile.find("[data-cy='propertyPrice']").first().text().trim();
     const price     = extractPriceFromText(priceText);
+    const title     = tile.find("[data-cy='propertyName']").first().text().trim();
+    const descText  = tile.find("[data-cy='propertyDescription']").first().text().trim();
+    const propType  = normalisePropertyType(descText);
 
-    // ── Title ─────────────────────────────────────────────────────────────
-    const title = tile.find("[data-cy='propertyName']").first().text().trim();
-
-    // ── Description → property type, CAP rate hint ────────────────────────
-    const descText = tile.find("[data-cy='propertyDescription']").first().text().trim();
-    const propType = normalisePropertyType(descText);
-
-    // ── Address ──────────────────────────────────────────────────────────
-    // <h4 data-cy="propertyAddress"> STREET <span>City, ST ZIP</span></h4>
     const addrEl   = tile.find("[data-cy='propertyAddress']").first();
     const citySpan = addrEl.find("span").first().text().trim();
-    // Street text sits as a direct text node — clone, strip span, grab text
     const streetRaw = addrEl.clone().find("span").remove().end().text().trim();
     const address   = [streetRaw, citySpan].filter(Boolean).join(", ") || undefined;
     const location  = citySpan || address;
-
-    // ── Square footage from description ──────────────────────────────────
-    const sqft = extractSqftFromText(descText);
+    const sqft      = extractSqftFromText(descText);
 
     results.push({
       url,
@@ -360,11 +418,7 @@ function parseViaHTML(html: string, sourceUrl: string, source: string): RawListi
 // Debug dump
 // ─────────────────────────────────────────────────────────────────────────────
 
-function saveParserDebug(
-  pathACount: number,
-  pathBCount: number,
-  pathCCount: number,
-) {
+function saveParserDebug(pathACount: number, pathBCount: number, pathCCount: number) {
   try {
     const dir = path.resolve("logs");
     fs.mkdirSync(dir, { recursive: true });
@@ -382,11 +436,6 @@ function saveParserDebug(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main entry point
-//
-// `nextData` can be:
-//   - An intercepted Crexi API JSON response  → parsed as Path A
-//   - A parsed __NEXT_DATA__ object           → parsed as Path B (same walker)
-//   - null                                    → falls through to Path C (HTML)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function parseCrxiListings(
@@ -395,7 +444,7 @@ export function parseCrxiListings(
   sourceUrl: string,
   source: string
 ): RawListing[] {
-  // Path A: intercepted API JSON — highest fidelity, no DOM rendering dependency
+  // Path A: intercepted API JSON — highest fidelity
   const pathAResults = parseViaJSON(nextData, sourceUrl, source, "intercepted API");
   if (pathAResults.length > 0) {
     logger.info(`[crexi-parser] PATH A succeeded: ${pathAResults.length} listings`);
@@ -403,10 +452,7 @@ export function parseCrxiListings(
     return pathAResults;
   }
 
-  // Path B: __NEXT_DATA__ JSON — same walker, different label.
-  // In practice nextData IS the intercepted API JSON, so if Path A returned
-  // empty the JSON genuinely had no recognisable listings; Path B is a no-op.
-  // Kept explicitly so the log makes the distinction clear if behaviour changes.
+  // Path B: __NEXT_DATA__ JSON (same walker, Crexi is Angular so this is a no-op)
   const pathBResults = parseViaJSON(nextData, sourceUrl, source, "__NEXT_DATA__");
   if (pathBResults.length > 0) {
     logger.info(`[crexi-parser] PATH B succeeded: ${pathBResults.length} listings`);
@@ -414,7 +460,7 @@ export function parseCrxiListings(
     return pathBResults;
   }
 
-  // Path C: parse rendered Angular HTML
+  // Path C: rendered Angular HTML
   if (!html) {
     logger.info("[crexi-parser] No HTML provided and no JSON listings — returning empty");
     saveParserDebug(0, 0, 0);

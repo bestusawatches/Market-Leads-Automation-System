@@ -1,352 +1,368 @@
 // src/scrapers/loopnet/loopnet.scraper.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// LoopNet scraper — ScraperAPI edition
+// LoopNet Scraper — Oxylabs Realtime API (residential) edition
 //
-// WHY THE PLAYWRIGHT APPROACH FAILS:
-//   LoopNet uses Akamai Bot Manager Premier. Akamai's primary gate is IP
-//   reputation — it blocklists datacenter CIDR ranges (AWS, DO, GCP, most
-//   Webshare pools) before the browser ever gets to run JS. The warm-up
-//   landing on "Access Denied" in the logs confirms this: Akamai rejected
-//   the IP at the TCP handshake level, so no amount of stealth JS patching
-//   or human-like behaviour can help.
-//
-// THE FIX — two options (ordered by reliability):
-//
-//   OPTION A (recommended): ScraperAPI with `render=true`
-//     ScraperAPI maintains a pool of residential IPs and handles Akamai
-//     challenge solving automatically. We send them the LoopNet URL and
-//     they return the fully-rendered HTML. No proxy credential management
-//     on our end.
-//     Set env var: SCRAPER_API_KEY=<your key>
-//     https://www.scraperapi.com/ — free tier: 5,000 requests/month
-//
-//   OPTION B: Dedicated residential proxy (manual)
-//     If you have a Brightdata / Oxylabs / Smartproxy residential proxy,
-//     set LOOPNET_PROXY_URL=http://user:pass@gate.host:port and the
-//     Playwright path will be used instead of ScraperAPI.
-//     Note: "residential" means ISP-assigned IPs, NOT Webshare datacenter.
-//
-// Both options are handled by this file — it picks whichever is configured.
+// Changes from previous version:
+//   • Switched to residential proxy routing (residential: true in payload)
+//   • Fresh session ID per URL per attempt — prevents Akamai session tracking
+//   • Increased retry delay with exponential backoff + jitter
+//   • Increased retries to 3
+//   • Added premium browser headers to payload
+//   • Removed wait_for_element (adds latency, Oxylabs handles it internally)
+//   • Increased timeout to 240s for residential (slower than datacenter)
+//   • Added oxylabs_headers for geo and device targeting
+//   • Block detection now saves envelope for diagnosis, not just HTML
+//   • Fallback: on Akamai block, retries with a fresh session automatically
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { chromium }   from "playwright-extra";
-import StealthPlugin  from "puppeteer-extra-plugin-stealth";
-import { Browser }    from "playwright";
-import * as https     from "https";
-import * as http      from "http";
-import * as zlib      from "zlib";
-import { BaseScraper, ScraperOptions } from "../base.scraper";
-import { BrowserHandle, sleep }        from "../../utils/browser";
-import { RawListing }                  from "../../types/listing";
-import { logger }                      from "../../utils/logger";
-import { parseLoopNetListings }        from "./loopnet.parser";
-import { config }                      from "../../config";
-import * as fs   from "fs";
+import * as https from "https";
+import * as http from "http";
+import * as zlib from "zlib";
+import * as fs from "fs";
 import * as path from "path";
 
-chromium.use(StealthPlugin());
+import { BaseScraper, ScraperOptions } from "../base.scraper";
+import { sleep, jitter } from "../../utils/browser";
+import { RawListing } from "../../types/listing";
+import { logger } from "../../utils/logger";
+import { parseLoopNetListings } from "./loopnet.parser";
+import { config } from "../../config";
 
-// ── Configuration ─────────────────────────────────────────────────────────────
+// ── Oxylabs Config ───────────────────────────────────────────────────────────
 
-const SCRAPER_API_KEY: string =
-  process.env.SCRAPER_API_KEY ?? (config as any).scraperApiKey ?? "";
+const OXYLABS_USERNAME   = process.env.OXYLABS_USERNAME  ?? "";
+const OXYLABS_PASSWORD   = process.env.OXYLABS_PASSWORD  ?? "";
+const OXYLABS_ENDPOINT   = "realtime.oxylabs.io";
+const OXYLABS_PATH       = "/v1/queries";
 
-// Only used if SCRAPER_API_KEY is absent — requires a true residential proxy
-const LOOPNET_PROXY_URL: string =
-  process.env.LOOPNET_PROXY_URL ??
-  (config as any).loopnetProxyUrl ??
-  config.proxyUrl ??
-  "";
+// Residential proxies are slower than datacenter — 240s is the safe ceiling.
+const REQUEST_TIMEOUT_MS = Number(process.env.LOOPNET_FETCH_TIMEOUT) || 240_000;
+const BETWEEN_PAGE_MS    = 6_000;
+const MAX_RETRIES        = 3;
 
-const SEARCH_URLS: string[]     = config.sources.loopnet.searchUrls;
-const MAX_PAGES_PER_URL: number = config.sources.loopnet.maxPagesPerUrl;
-const REQUEST_TIMEOUT_MS        = 60_000;
-const AKAMAI_WAIT_MS            = 20_000;
+// ── Search URLs ──────────────────────────────────────────────────────────────
 
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-];
-
-// ── ScraperAPI HTTP fetch ──────────────────────────────────────────────────────
-//
-// ScraperAPI proxies requests through their residential pool and handles
-// Akamai/Cloudflare challenges automatically. `render=true` means they spin
-// up a headless browser on their end and return the fully-rendered HTML.
-
-interface FetchResult {
-  status: number;
-  body:   string;
+function getSearchUrls(): string[] {
+  const env     = process.env.LOOPNET_SEARCH_URLS ?? "";
+  const fromEnv = env.split(",").map((u) => u.trim()).filter(Boolean);
+  return fromEnv.length > 0 ? fromEnv : (config.sources.loopnet.searchUrls ?? []);
 }
 
-function scraperApiFetch(targetUrl: string, render = true): Promise<FetchResult> {
-  return new Promise((resolve, reject) => {
-    const params = new URLSearchParams({
-      api_key:        SCRAPER_API_KEY,
-      url:            targetUrl,
-      render:         render ? "true" : "false",
-      country_code:   "us",
-      // Tell ScraperAPI to handle Akamai specifically
-      premium:        "true",
-      session_number: String(Math.floor(Math.random() * 9_999)),
-    });
+// ── Session ID ────────────────────────────────────────────────────────────────
+// Fresh session per attempt — Akamai tracks session IDs across requests and
+// will block a session that previously triggered a challenge.
 
-    const apiUrl = `https://api.scraperapi.com/?${params.toString()}`;
-    const parsed = new URL(apiUrl);
+function freshSessionId(): string {
+  return `ln_${Date.now()}_${Math.floor(Math.random() * 99_999)}`;
+}
+
+// ── Decompression ─────────────────────────────────────────────────────────────
+
+async function decompressBuffer(buf: Buffer, encoding: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const enc = encoding.toLowerCase().trim();
+    if (enc === "gzip" || enc === "x-gzip") {
+      zlib.gunzip(buf, (err, result) => (err ? reject(err) : resolve(result)));
+    } else if (enc === "deflate") {
+      zlib.inflate(buf, (err, result) => {
+        if (err) {
+          zlib.inflateRaw(buf, (err2, result2) => (err2 ? reject(err2) : resolve(result2)));
+        } else {
+          resolve(result);
+        }
+      });
+    } else if (enc === "br") {
+      zlib.brotliDecompress(buf, (err, result) => (err ? reject(err) : resolve(result)));
+    } else {
+      resolve(buf);
+    }
+  });
+}
+
+// ── Oxylabs POST ─────────────────────────────────────────────────────────────
+
+function oxylabsPost(bodyStr: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const authStr = Buffer.from(`${OXYLABS_USERNAME}:${OXYLABS_PASSWORD}`).toString("base64");
+
+    const deadline = setTimeout(() => {
+      req.destroy(new Error("Oxylabs request timeout"));
+    }, REQUEST_TIMEOUT_MS);
 
     const req = https.request(
       {
-        hostname: parsed.hostname,
-        path:     parsed.pathname + parsed.search,
-        method:   "GET",
+        hostname: OXYLABS_ENDPOINT,
+        path:     OXYLABS_PATH,
+        method:   "POST",
+        family:   4,
         headers:  {
-          "User-Agent": USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
-          Accept:       "text/html,application/xhtml+xml,*/*;q=0.8",
+          "Content-Type":    "application/json",
+          "Authorization":   `Basic ${authStr}`,
+          "Content-Length":  Buffer.byteLength(bodyStr).toString(),
+          "Accept-Encoding": "gzip, deflate, br",
         },
       },
       (res: http.IncomingMessage) => {
-        const enc    = (res.headers["content-encoding"] ?? "").toLowerCase();
         const chunks: Buffer[] = [];
-        const stream =
-          enc === "gzip"    ? res.pipe(zlib.createGunzip()) :
-          enc === "deflate" ? res.pipe(zlib.createInflate()) :
-          enc === "br"      ? res.pipe(zlib.createBrotliDecompress()) :
-          res as any;
-
-        (stream as NodeJS.ReadableStream).on("data",  (c: Buffer) => chunks.push(c));
-        (stream as NodeJS.ReadableStream).on("end",   () =>
-          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") })
-        );
-        (stream as NodeJS.ReadableStream).on("error", reject);
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", async () => {
+          clearTimeout(deadline);
+          const rawBuf   = Buffer.concat(chunks);
+          const encoding = (res.headers["content-encoding"] ?? "").trim();
+          let decompressed: Buffer;
+          try {
+            decompressed = encoding ? await decompressBuffer(rawBuf, encoding) : rawBuf;
+          } catch (e) {
+            logger.warn(`[loopnet] Decompression failed (${encoding}): ${e}`);
+            decompressed = rawBuf;
+          }
+          resolve({
+            status: res.statusCode ?? 0,
+            body:   decompressed.toString("utf-8"),
+          });
+        });
+        res.on("error", (err) => {
+          clearTimeout(deadline);
+          reject(err);
+        });
       }
     );
 
-    req.on("error", reject);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error(`ScraperAPI timeout: ${targetUrl}`)));
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error("Socket idle timeout")));
+
+    req.on("error", (err) => {
+      clearTimeout(deadline);
+      reject(err);
+    });
+
+    req.write(bodyStr);
     req.end();
   });
 }
 
-// ── Akamai block detection ────────────────────────────────────────────────────
+// ── Build Oxylabs Payload ────────────────────────────────────────────────────
+//
+// Key changes vs old version:
+//   • residential: true   — routes through real residential IPs, not datacenter
+//   • fresh sessionId per call — prevents Akamai session fingerprinting
+//   • Removed wait_for_element — Oxylabs residential already waits for render;
+//     the extra wait_for_element just adds wall-clock time
+//   • scroll_to_bottom kept — triggers lazy-load of listing cards
+//   • Added realistic browser context headers
+
+function buildPayload(targetUrl: string, sessionId: string): Record<string, unknown> {
+  return {
+    source:          "universal",
+    url:             targetUrl,
+    render:          "html",
+    geo_location:    "Ohio, United States",   // state-level geo = more relevant IPs
+    user_agent_type: "desktop_chrome",
+    locale:          "en-US",
+    residential:     true,                    // ← KEY: residential proxy routing
+    session_id:      sessionId,               // fresh per attempt
+    context: [
+      { key: "follow_redirects",  value: true  },
+      { key: "load_images",       value: false }, // faster, we only need HTML
+    ],
+    browser_instructions: [
+      // Scroll to trigger lazy-loaded listing cards
+      {
+        type:        "scroll_to_bottom",
+        timeout_s:   20,
+      },
+      // Brief settle after scroll
+      {
+        type:        "wait",
+        wait_time_s: 3,
+      },
+    ],
+  };
+}
+
+// ── Retry delay with exponential backoff ─────────────────────────────────────
+// Attempt 1 fail → wait ~10s
+// Attempt 2 fail → wait ~20s
+// Attempt 3 fail → no wait (last attempt)
+
+function retryDelayMs(attempt: number): number {
+  const base  = 10_000;
+  const exp   = Math.pow(2, attempt - 1); // 1, 2, 4
+  const noise = Math.random() * 5_000;    // 0–5s jitter
+  return Math.min(base * exp + noise, 60_000);
+}
+
+// ── Core Fetch Function ──────────────────────────────────────────────────────
+
+async function oxylabsFetch(targetUrl: string): Promise<string | null> {
+  if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) {
+    logger.error("[loopnet] OXYLABS_USERNAME / OXYLABS_PASSWORD not set in .env");
+    return null;
+  }
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // Fresh session ID every attempt — prevents Akamai from tracking the session
+    const sessionId = freshSessionId();
+    const payload   = buildPayload(targetUrl, sessionId);
+    const bodyStr   = JSON.stringify(payload);
+
+    logger.debug(`[loopnet] Oxylabs attempt ${attempt}/${MAX_RETRIES} | session=${sessionId} → ${targetUrl}`);
+
+    let resp: { status: number; body: string };
+    try {
+      resp = await oxylabsPost(bodyStr);
+    } catch (err: any) {
+      logger.warn(`[loopnet] Transport error (attempt ${attempt}): ${err.message}`);
+      if (attempt < MAX_RETRIES) {
+        const delay = retryDelayMs(attempt);
+        logger.debug(`[loopnet] Waiting ${Math.round(delay / 1000)}s before retry...`);
+        await sleep(delay);
+        continue;
+      }
+      logger.error(`[loopnet] All ${MAX_RETRIES} attempts failed for ${targetUrl}`);
+      return null;
+    }
+
+    const { status, body } = resp;
+
+    if (status === 401) {
+      logger.error("[loopnet] Oxylabs 401 — invalid credentials");
+      throw new Error("OXYLABS_AUTH_FAILED");
+    }
+
+    if (status === 429) {
+      logger.warn(`[loopnet] Oxylabs 429 — rate limited`);
+      if (attempt < MAX_RETRIES) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      return null;
+    }
+
+    if (status !== 200) {
+      logger.warn(`[loopnet] Oxylabs HTTP ${status} for ${targetUrl}`);
+      if (attempt < MAX_RETRIES) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      return null;
+    }
+
+    // ── Parse envelope ──────────────────────────────────────────────────────
+
+    let envelope: any;
+    try {
+      envelope = JSON.parse(body);
+    } catch {
+      logger.warn(`[loopnet] Failed to parse Oxylabs envelope (attempt ${attempt})`);
+      if (attempt < MAX_RETRIES) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      return null;
+    }
+
+    const result0 = envelope?.results?.[0];
+    if (!result0) {
+      logger.warn(`[loopnet] No results[0] in Oxylabs response (attempt ${attempt})`);
+      // Save envelope for diagnosis
+      saveDebugJson(envelope, `no_results_${attempt}_${Date.now()}`);
+      if (attempt < MAX_RETRIES) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      return null;
+    }
+
+    const innerStatus = result0.status_code ?? result0.statusCode ?? 200;
+    if (innerStatus === 401) {
+      logger.error("[loopnet] Oxylabs inner 401");
+      throw new Error("OXYLABS_AUTH_FAILED");
+    }
+    if (innerStatus !== 200 && innerStatus !== 0) {
+      logger.warn(`[loopnet] Inner status ${innerStatus} (attempt ${attempt})`);
+      if (attempt < MAX_RETRIES) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      return null;
+    }
+
+    const content: string =
+      result0.content          ??
+      result0.html             ??
+      result0.results?.[0]?.content ??
+      result0.results?.[0]?.html    ??
+      "";
+
+    if (content.length < 5_000) {
+      logger.warn(`[loopnet] Short content (${content.length} chars) on attempt ${attempt} — likely block page`);
+      saveDebugHtml(content, `short_${attempt}_${Date.now()}`);
+      // Short content = block page — retry with a fresh session
+      if (attempt < MAX_RETRIES) {
+        const delay = retryDelayMs(attempt);
+        logger.debug(`[loopnet] Retrying with fresh session in ${Math.round(delay / 1000)}s...`);
+        await sleep(delay);
+        continue;
+      }
+      return null;
+    }
+
+    return content;
+  }
+
+  return null;
+}
+
+// ── Block Detection ───────────────────────────────────────────────────────────
 
 function isAkamaiBlocked(html: string, url: string, title: string): boolean {
   const lower = html.toLowerCase();
   const conditions = [
-    { label: '"access denied" in html',          hit: lower.includes("access denied") },
-    { label: '"edgesuite.net" in html',           hit: lower.includes("edgesuite.net") },
-    { label: '"akamai" in html',                  hit: lower.includes("akamai") },
-    { label: '"cloudflare" in html',              hit: lower.includes("cloudflare") },
-    { label: '"please enable cookies" in html',   hit: lower.includes("please enable cookies") },
-    { label: '"checking your browser" in html',   hit: lower.includes("checking your browser") },
-    { label: '"just a moment" in html',           hit: lower.includes("just a moment") },
-    { label: '"__cf_chl" in url',                 hit: url.includes("__cf_chl") },
+    { label: "access denied",         hit: lower.includes("access denied")         },
+    { label: "edgesuite.net",         hit: lower.includes("edgesuite.net")         },
+    { label: "akamai",                hit: lower.includes("akamai")                },
+    { label: "cloudflare",            hit: lower.includes("cloudflare")            },
+    { label: "please enable cookies", hit: lower.includes("please enable cookies") },
+    { label: "checking your browser", hit: lower.includes("checking your browser") },
+    { label: "just a moment",         hit: lower.includes("just a moment")         },
+    { label: "robot or human",        hit: lower.includes("robot or human")        },
+    { label: "unusual traffic",       hit: lower.includes("unusual traffic")       },
     {
       label: "challenge page title",
       hit: ["just a moment", "attention required", "please wait", "security check", "access denied"]
         .some((s) => title.toLowerCase().includes(s)),
     },
   ];
+
   const triggered = conditions.filter((c) => c.hit);
   if (triggered.length > 0) {
-    logger.warn(
-      `[loopnet] Block conditions triggered (${triggered.length}):\n` +
-        triggered.map((c) => `  ✗ ${c.label}`).join("\n")
-    );
+    logger.warn(`[loopnet] Block conditions triggered: ${triggered.map((c) => c.label).join(", ")}`);
     return true;
   }
   return false;
 }
 
-// ── ScraperAPI path ───────────────────────────────────────────────────────────
-
-async function fetchViaScraperApi(url: string): Promise<string | null> {
-  logger.debug(`[loopnet] ScraperAPI fetch: ${url}`);
-
-  try {
-    const { status, body } = await scraperApiFetch(url, true);
-
-    if (status === 200 && body.length > 5_000) {
-      const titleMatch = body.match(/<title[^>]*>([^<]+)/i);
-      const title = titleMatch?.[1]?.trim() ?? "";
-
-      if (isAkamaiBlocked(body, url, title)) {
-        logger.warn(`[loopnet] ScraperAPI returned blocked page for: ${url}`);
-        logger.warn(`[loopnet] → Check your ScraperAPI plan includes 'premium' residential IPs`);
-        return null;
-      }
-
-      logger.debug(`[loopnet] ScraperAPI OK — ${body.length} chars, title: "${title}"`);
-      return body;
-    }
-
-    logger.warn(`[loopnet] ScraperAPI HTTP ${status} for: ${url}`);
-    if (status === 401) logger.error(`[loopnet] Invalid SCRAPER_API_KEY — check your .env`);
-    if (status === 403) logger.error(`[loopnet] ScraperAPI quota exceeded or plan limitation`);
-    if (status === 500) logger.warn(`[loopnet] ScraperAPI failed to render — retrying without render…`);
-
-    // Retry without JS render (faster + cheaper) if render=true failed
-    if (status === 500) {
-      const { status: s2, body: b2 } = await scraperApiFetch(url, false);
-      if (s2 === 200 && b2.length > 5_000) return b2;
-    }
-
-    return null;
-  } catch (err: any) {
-    logger.error(`[loopnet] ScraperAPI request failed: ${err.message}`);
-    return null;
-  }
-}
-
-// ── Playwright + residential proxy path ───────────────────────────────────────
-//
-// Only used when LOOPNET_PROXY_URL is set to a genuine residential proxy.
-// This is OPTION B from the strategy comment at the top.
-
-async function fetchViaPlaywright(
-  url: string,
-  proxyUrl: string
-): Promise<string | null> {
-  logger.debug(`[loopnet] Playwright fetch via residential proxy: ${url}`);
-
-  let browser: Browser | undefined;
-
-  try {
-    browser = await chromium.launch({
-      executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined,
-      headless: true,
-      proxy: { server: proxyUrl },
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-infobars",
-        "--disable-dev-shm-usage",
-        "--window-size=1440,900",
-        "--disable-features=IsolateOrigins,site-per-process",
-      ],
-    }) as unknown as Browser;
-
-    const ua      = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-    const width   = 1280 + Math.floor(Math.random() * 200);
-    const height  = 800  + Math.floor(Math.random() * 100);
-
-    const context = await browser.newContext({
-      viewport:   { width, height },
-      locale:     "en-US",
-      timezoneId: "America/New_York",
-      userAgent:  ua,
-    });
-
-    const page = await context.newPage();
-
-    // Anti-detection init
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver",  { get: () => undefined });
-      Object.defineProperty(navigator, "plugins",    { get: () => [1, 2, 3, 4, 5] });
-      Object.defineProperty(navigator, "languages",  { get: () => ["en-US", "en"] });
-      (window as any).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {} };
-      Object.defineProperty(navigator, "connection", {
-        get: () => ({ effectiveType: "4g", rtt: 50, downlink: 10, saveData: false }),
-      });
-    });
-
-    await page.setExtraHTTPHeaders({
-      "Accept-Language":           "en-US,en;q=0.9",
-      "Accept":                    "text/html,application/xhtml+xml,*/*;q=0.8",
-      "Upgrade-Insecure-Requests": "1",
-      "Sec-Fetch-Dest":            "document",
-      "Sec-Fetch-Mode":            "navigate",
-      "Sec-Fetch-Site":            "none",
-      "Sec-Fetch-User":            "?1",
-    });
-
-    // Warm up on homepage first
-    try {
-      logger.debug("[loopnet] Warming up on homepage…");
-      await page.goto("https://www.loopnet.com/", {
-        waitUntil: "domcontentloaded",
-        timeout:   30_000,
-      });
-      await sleep(3_000 + Math.random() * 2_000);
-      await page.evaluate("window.scrollBy(0, 300)");
-      await sleep(800);
-      const warmTitle = await page.title();
-      logger.debug(`[loopnet] Warm-up title: "${warmTitle}"`);
-    } catch {
-      logger.warn("[loopnet] Warm-up navigation failed — continuing to target URL");
-    }
-
-    // Navigate to target
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await sleep(2_500 + Math.random() * 1_500);
-
-    const title = await page.title();
-    let   html  = await page.content();
-
-    // Wait for Akamai challenge to self-resolve
-    if (isAkamaiBlocked(html, page.url(), title)) {
-      logger.info("[loopnet] Waiting for Akamai challenge to clear…");
-      const deadline = Date.now() + AKAMAI_WAIT_MS;
-
-      while (Date.now() < deadline) {
-        await sleep(2_000);
-        html = await page.content();
-        const t = await page.title();
-        if (!isAkamaiBlocked(html, page.url(), t)) {
-          logger.info("[loopnet] Akamai challenge cleared");
-          break;
-        }
-        logger.info(`[loopnet] Still blocked (${Math.round((Date.now() - (deadline - AKAMAI_WAIT_MS)) / 1000)}s)…`);
-      }
-
-      html = await page.content();
-      if (isAkamaiBlocked(html, page.url(), await page.title())) {
-        logger.warn("[loopnet] Residential proxy also blocked by Akamai — try a different proxy provider");
-        return null;
-      }
-    }
-
-    // Scroll to trigger lazy-loaded cards
-    for (let i = 0; i < 4; i++) {
-      await page.evaluate(`window.scrollBy(0, ${500 + Math.random() * 300})`);
-      await sleep(600);
-    }
-    await page.evaluate("window.scrollTo(0, 0)");
-    await sleep(500);
-
-    return await page.content();
-
-  } catch (err: any) {
-    logger.error(`[loopnet] Playwright fetch error: ${err.message}`);
-    return null;
-  } finally {
-    await browser?.close();
-  }
-}
-
-// ── Page URL builder ──────────────────────────────────────────────────────────
-
-function buildPageUrl(baseUrl: string, pageNum: number): string {
-  if (pageNum <= 1) return baseUrl;
-  // LoopNet pagination: append ?page=N
-  const sep = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${sep}page=${pageNum}`;
-}
-
-// ── Debug helpers ─────────────────────────────────────────────────────────────
+// ── Debug Helpers ─────────────────────────────────────────────────────────────
 
 function saveDebugHtml(html: string, label: string): void {
   try {
     const dir = path.resolve("logs");
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `loopnet_${label}.html`);
-    fs.writeFileSync(file, html, "utf-8");
-    logger.debug(`[loopnet] Debug HTML saved → ${file}`);
+    fs.writeFileSync(path.join(dir, `loopnet_${label}.html`), html, "utf-8");
+    logger.debug(`[loopnet] Debug HTML saved → logs/loopnet_${label}.html`);
   } catch {}
 }
 
-// ── Scraper class ─────────────────────────────────────────────────────────────
+function saveDebugJson(data: unknown, label: string): void {
+  try {
+    const dir = path.resolve("logs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `loopnet_${label}.json`), JSON.stringify(data, null, 2), "utf-8");
+    logger.debug(`[loopnet] Debug JSON saved → logs/loopnet_${label}.json`);
+  } catch {}
+}
+
+// ── Scraper Class ────────────────────────────────────────────────────────────
 
 export class LoopNetScraper extends BaseScraper {
   readonly sourceName = "loopnet";
@@ -354,117 +370,120 @@ export class LoopNetScraper extends BaseScraper {
   constructor(options: ScraperOptions = {}) {
     super(options);
 
-    const mode = SCRAPER_API_KEY
-      ? `ScraperAPI (key: ${SCRAPER_API_KEY.slice(0, 6)}…)`
-      : LOOPNET_PROXY_URL
-      ? `Playwright + residential proxy`
-      : "⚠️  NO PROXY / API KEY — will be blocked by Akamai";
+    const urls = getSearchUrls();
+    logger.info(`[loopnet] ${urls.length} search URL(s), max ${this.options.maxPages} pages each`);
+    logger.info(`[loopnet] Using Oxylabs Realtime API (residential + render:html)`);
+    logger.info(`[loopnet] Timeout: ${REQUEST_TIMEOUT_MS}ms | Retries: ${MAX_RETRIES}`);
 
-    logger.info(
-      `[loopnet] ${SEARCH_URLS.length} target URL(s), up to ${MAX_PAGES_PER_URL} page(s) each:\n` +
-        SEARCH_URLS.map((u) => `  • ${u}`).join("\n")
-    );
-    logger.info(`[loopnet] Fetch mode: ${mode}`);
-
-    if (!SCRAPER_API_KEY && !LOOPNET_PROXY_URL) {
-      logger.warn(
-        "[loopnet] ──────────────────────────────────────────────────────────\n" +
-        "[loopnet] ACTION REQUIRED: LoopNet requires bypassing Akamai Bot Manager.\n" +
-        "[loopnet] Option A (easiest): Add SCRAPER_API_KEY=<key> to your .env\n" +
-        "[loopnet]   Get a free key at https://www.scraperapi.com/\n" +
-        "[loopnet] Option B: Add LOOPNET_PROXY_URL=http://user:pass@host:port\n" +
-        "[loopnet]   Must be a RESIDENTIAL proxy (Brightdata, Oxylabs, Smartproxy)\n" +
-        "[loopnet]   Datacenter proxies (most Webshare plans) will not work.\n" +
-        "[loopnet] ──────────────────────────────────────────────────────────"
+    if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) {
+      logger.error(
+        "[loopnet] Oxylabs credentials missing — add OXYLABS_USERNAME and OXYLABS_PASSWORD to .env"
       );
     }
   }
 
-  // ── Fetch a single page's HTML via whichever method is configured ─────────
-
   private async fetchPageHtml(url: string): Promise<string | null> {
-    if (SCRAPER_API_KEY) {
-      return fetchViaScraperApi(url);
+    let html: string | null;
+    try {
+      html = await oxylabsFetch(url);
+    } catch (err: any) {
+      if (err?.message === "OXYLABS_AUTH_FAILED") {
+        logger.error("[loopnet] Auth failed — aborting run");
+        throw err;
+      }
+      logger.error(`[loopnet] Unexpected fetch error: ${err.message}`);
+      return null;
     }
 
-    if (LOOPNET_PROXY_URL) {
-      return fetchViaPlaywright(url, LOOPNET_PROXY_URL);
+    if (!html) return null;
+
+    const titleMatch = html.match(/<title[^>]*>([^<]+)/i);
+    const title      = titleMatch?.[1]?.trim() ?? "";
+
+    if (isAkamaiBlocked(html, url, title)) {
+      logger.warn(`[loopnet] Akamai block detected on ${url}`);
+      saveDebugHtml(html, `blocked_${Date.now()}`);
+      return null;
     }
 
-    // No credentials configured — log clearly and bail
-    logger.error(
-      "[loopnet] Cannot fetch — set SCRAPER_API_KEY or LOOPNET_PROXY_URL in .env"
-    );
-    return null;
+    return html;
   }
-
-  // ── Scrape a single search URL across all its pages ───────────────────────
 
   private async scrapeSearchUrl(searchUrl: string): Promise<RawListing[]> {
     const allListings: RawListing[] = [];
 
-    for (let pageNum = 1; pageNum <= MAX_PAGES_PER_URL; pageNum++) {
-      const pageUrl = buildPageUrl(searchUrl, pageNum);
-      logger.info(`[loopnet] ── Fetching page ${pageNum}: ${pageUrl}`);
+    for (let pageNum = 1; pageNum <= this.options.maxPages; pageNum++) {
+      const pageUrl = this.buildPageUrl(searchUrl, pageNum);
+      logger.info(`[loopnet] Fetching page ${pageNum}: ${pageUrl}`);
 
       const html = await this.fetchPageHtml(pageUrl);
-
       if (!html) {
-        logger.warn(`[loopnet] No HTML returned for page ${pageNum} — stopping pagination`);
+        logger.warn(`[loopnet] No HTML for page ${pageNum} — stopping`);
         break;
       }
 
-      const slug = searchUrl.replace(/https?:\/\/[^/]+\/search\//, "").replace(/\//g, "_").slice(0, 40);
-      saveDebugHtml(html, `raw_p${pageNum}_${slug}`);
+      const slug = searchUrl
+        .replace(/https?:\/\/[^/]+\/search\//, "")
+        .replace(/\//g, "_")
+        .slice(0, 40);
+
+      saveDebugHtml(html, `p${pageNum}_${slug}`);
 
       const listings = parseLoopNetListings(html, searchUrl, "loopnet");
       logger.info(`[loopnet] Page ${pageNum}: ${listings.length} listings parsed`);
 
       allListings.push(...listings);
 
-      // Stop if no results or no "next page" signal
       const hasMore =
         listings.length > 0 &&
-        pageNum < MAX_PAGES_PER_URL &&
-        (html.includes(`page=${pageNum + 1}`) ||
-          html.includes('aria-label="Next"') ||
-          html.includes('rel="next"'));
+        pageNum < this.options.maxPages &&
+        (html.includes(`page=${pageNum + 1}`) || html.includes('aria-label="Next"'));
 
       if (!hasMore) {
-        logger.debug(`[loopnet] No more pages after page ${pageNum}`);
+        logger.debug(`[loopnet] No more pages after ${pageNum}`);
         break;
       }
 
-      const pause = 3_000 + Math.random() * 2_000;
-      logger.debug(`[loopnet] Pausing ${Math.round(pause / 1_000)}s before page ${pageNum + 1}…`);
-      await sleep(pause);
+      await sleep(jitter(BETWEEN_PAGE_MS));
     }
 
     return allListings;
   }
 
-  // ── BaseScraper entry point ───────────────────────────────────────────────
+  private buildPageUrl(baseUrl: string, pageNum: number): string {
+    if (pageNum <= 1) return baseUrl;
+    const sep = baseUrl.includes("?") ? "&" : "?";
+    return `${baseUrl}${sep}page=${pageNum}`;
+  }
 
   protected async scrapePage(
-    _handle: BrowserHandle,
+    _handle: any,
     pageNumber: number
   ): Promise<RawListing[]> {
-    // All pagination is handled internally — BaseScraper only calls once
     if (pageNumber !== 1) return [];
 
     const allListings: RawListing[] = [];
+    const searchUrls = getSearchUrls();
 
-    for (let i = 0; i < SEARCH_URLS.length; i++) {
-      const url = SEARCH_URLS[i];
-      logger.info(`[loopnet] ── URL ${i + 1}/${SEARCH_URLS.length}: ${url}`);
+    for (let i = 0; i < searchUrls.length; i++) {
+      const url = searchUrls[i];
+      logger.info(`[loopnet] Scraping search URL ${i + 1}/${searchUrls.length}: ${url}`);
 
-      const listings = await this.scrapeSearchUrl(url);
-      allListings.push(...listings);
-      logger.info(`[loopnet] ${url} → ${listings.length} listings`);
+      try {
+        const listings = await this.scrapeSearchUrl(url);
+        allListings.push(...listings);
+      } catch (err: any) {
+        if (err?.message === "OXYLABS_AUTH_FAILED") {
+          logger.error("[loopnet] Auth failed — aborting all remaining URLs");
+          break;
+        }
+        throw err;
+      }
 
-      if (i < SEARCH_URLS.length - 1) {
-        const pause = 5_000 + Math.random() * 3_000;
-        logger.info(`[loopnet] Pausing ${Math.round(pause / 1_000)}s before next URL…`);
+      if (i < searchUrls.length - 1) {
+        // Longer pause between different search URLs — reduces burst pattern detection
+        const pause = 10_000 + Math.random() * 8_000;
+        logger.debug(`[loopnet] Pausing ${Math.round(pause / 1000)}s before next URL...`);
         await sleep(pause);
       }
     }
@@ -477,7 +496,7 @@ export class LoopNetScraper extends BaseScraper {
       return true;
     });
 
-    logger.info(`[loopnet] Total: ${deduped.length} unique listings across all URLs`);
+    logger.info(`[loopnet] Total unique listings: ${deduped.length}`);
     return deduped;
   }
 

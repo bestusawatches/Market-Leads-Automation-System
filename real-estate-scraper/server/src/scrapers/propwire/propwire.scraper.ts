@@ -1,87 +1,57 @@
 // src/scrapers/propwire/propwire.scraper.ts
 //
-// ── Strategy ──────────────────────────────────────────────────────────────────
+// ── Root cause of 403 ─────────────────────────────────────────────────────────
 //
-// Propwire is a React SPA that:
-//   1. Requires a free account (session cookie) to return property data
-//   2. Embeds all search results in __NEXT_DATA__ inside the rendered HTML
-//   3. Uses a URL-encoded JSON `filters` query param for search configuration
+// DataDome bot-protection blocks requests from server/datacenter IPs.
+// The fix is to route api.propwire.com calls through a residential proxy
+// AND send the datadome cookie + matching browser headers with every request.
 //
-// We fetch pages via Oxylabs (render:html) which:
-//   - Handles JS rendering so __NEXT_DATA__ is populated
-//   - Rotates residential IPs to avoid rate limits
-//   - We inject the session cookie via Oxylabs context with force_cookies:true
+// ── Token strategy ────────────────────────────────────────────────────────────
 //
-// COOKIE FORMAT (Oxylabs requirement):
-//   Cookies must be passed as an array of {key, value} objects, NOT as a
-//   cookie string. force_cookies:true must also be set. Passing a raw
-//   "session=xxx" string causes Oxylabs to return HTTP 400.
+//   Tier 1 (RECOMMENDED) — PROPWIRE_BEARER_TOKEN env var
+//     DevTools → Network → POST api.propwire.com/api/property_search
+//     → Headers → Authorization: Bearer eyJ...
+//     Copy everything AFTER "Bearer " into .env.
+//     Expires in ~2h on basic plan. When expired: API 401 → grab a fresh one.
 //
-//   Correct format:
-//   context: [
-//     { key: "force_cookies", value: true },
-//     { key: "cookies", value: [{ key: "laravel_session", value: "eyJ..." }] },
-//   ]
+//   Tier 2 — Inertia XHR token (page JWT, ~407 chars)
+//     Works for the Propwire frontend but NOT the API subdomain.
+//     Kept for future use; currently skipped.
 //
-// SEARCH URL PATTERN:
-//   https://propwire.com/search?filters=<URL-encoded JSON>&page=<N>
+//   Tier 3 — Oxylabs render:html
+//     Renders the page and extracts data-page token.
+//     Same limitation as Tier 2.
 //
-//   Filters JSON shape:
-//   {
-//     "locations": [
-//       { "searchType": "C", "state": "OH", "title": "Columbus, OH",
-//         "stateName": "Ohio", "city": "Columbus" }
-//     ],
-//     "lead_type":      ["for_sale"],
-//     "property_type":  ["sfr","mfr"],
-//     "estimated_value": { "max": 300000 },
-//     "mls_status":     ["Active"]
-//   }
+// ── FASTEST SETUP ─────────────────────────────────────────────────────────────
 //
-// AUTHENTICATION:
-//   Propwire requires a logged-in session cookie to return data.
-//   Set PROPWIRE_SESSION_COOKIE=<value> in .env.
+//   1. Log into propwire.com in Chrome
+//   2. DevTools → Network → clear → perform any search
+//   3. Find: POST api.propwire.com/api/property_search
+//   4. Headers → Authorization: Bearer eyJ...  (copy value after "Bearer ")
+//   5. Headers → cookie: ...datadome=<value>... (copy datadome= value)
+//   6. Set in .env:
+//      PROPWIRE_BEARER_TOKEN=eyJ...
+//      PROPWIRE_DATADOME=<datadome value>
+//   7. npm run scrape:propwire
 //
-//   HOW TO GET THE CORRECT COOKIE VALUE:
-//     1. Open Chrome and log into propwire.com
-//     2. Open DevTools (F12) → Application tab → Cookies → https://propwire.com
-//     3. Look for a cookie named "laravel_session" (most common) or "session"
-//        or "__Secure-session". It will have a long encoded value.
-//     4. Copy only the VALUE (not the name), paste into .env:
-//        PROPWIRE_SESSION_COOKIE=eyJpdiI6...
+// ── Required .env ─────────────────────────────────────────────────────────────
+//   PROPWIRE_BEARER_TOKEN=eyJ...
+//   PROPWIRE_DATADOME=<value>
+//   PROXY_URL=http://user:pass@host:port   ← residential proxy, bypasses DataDome
 //
-//   HOW TO VERIFY THE COOKIE IS WORKING:
-//     Run: npm run scrape:propwire
-//     Check logs/propwire_search_columbus_oh_p1.html
-//     - If it contains "__NEXT_DATA__" and property objects → cookie is valid
-//     - If it contains "Sign In" or "Don't have an account" → cookie is expired
-//     - If the file is missing → Oxylabs call failed (check credentials)
-//
-//   COOKIE EXPIRY: Propwire session cookies typically expire after 2 hours of
-//   inactivity. If you get empty results, refresh the cookie by logging in
-//   again and copying the new value.
-//
-// Required .env:
-//   OXYLABS_USERNAME=your_api_user
-//   OXYLABS_PASSWORD=your_api_password
-//   PROPWIRE_SESSION_COOKIE=<laravel_session cookie value from DevTools>
-//
-// Optional .env:
+// ── Optional .env ─────────────────────────────────────────────────────────────
+//   PROPWIRE_SESSION_COOKIE=propwire_session=eyJ...
+//   PROPWIRE_XSRF_TOKEN=<value>
+//   OXYLABS_USERNAME / OXYLABS_PASSWORD
 //   PROPWIRE_MAX_PAGES=10
-//   PROPWIRE_DETAIL_LIMIT=20
-//   PROPWIRE_LEAD_TYPES=for_sale,preforeclosure   (comma-separated)
-//
-// ── Debug artefacts → logs/ ───────────────────────────────────────────────────
-//   propwire_search_<market>_p<N>.html   — raw rendered search page HTML
-//   propwire_json_<market>_p<N>.json     — __NEXT_DATA__ from search page
-//   propwire_detail_<id>.html            — detail page HTML (Phase 2)
-//   propwire_detail_<id>.json            — __NEXT_DATA__ from detail page
-//   propwire.json                        — final accepted + rejected dump
+//   PROPWIRE_PAGE_SIZE=50
+//   PROPWIRE_LEAD_TYPES=for_sale,preforeclosure
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as https from "https";
 import * as http  from "http";
+import * as tls   from "tls";
 import * as zlib  from "zlib";
 import * as fs    from "fs";
 import * as path  from "path";
@@ -91,43 +61,59 @@ import { BrowserHandle, sleep, jitter } from "../../utils/browser";
 import { RawListing }                   from "../../types/listing";
 import { logger }                       from "../../utils/logger";
 import {
-  parsePropwireSearchPage,
-  extractEstimateFromDetailPage,
-  extractNextData,
-  MAX_DAYS_OLD,
+  parsePropwireApiResponse,
+  extractPropwireToken,
 } from "./propwire.parser";
 import { config } from "../../config";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const OXYLABS_USERNAME   = process.env.OXYLABS_USERNAME   ?? "";
-const OXYLABS_PASSWORD   = process.env.OXYLABS_PASSWORD   ?? "";
-const OXYLABS_ENDPOINT   = "realtime.oxylabs.io";
+const BEARER_TOKEN_ENV   = process.env.PROPWIRE_BEARER_TOKEN   ?? "";
+const RAW_COOKIE         = process.env.PROPWIRE_SESSION_COOKIE ?? "";
+const DATADOME_COOKIE    = process.env.PROPWIRE_DATADOME       ?? "";
+const XSRF_TOKEN         = process.env.PROPWIRE_XSRF_TOKEN     ?? "";
+const OXYLABS_USERNAME   = process.env.OXYLABS_USERNAME        ?? "";
+const OXYLABS_PASSWORD   = process.env.OXYLABS_PASSWORD        ?? "";
+const PROXY_URL          = process.env.PROXY_URL               ?? "";
+
+const MAX_PAGES          = Number(process.env.PROPWIRE_MAX_PAGES  ?? 10);
+const PAGE_SIZE          = Number(process.env.PROPWIRE_PAGE_SIZE  ?? 50);
+
+// "for_sale" → "mls_active" (confirmed from DevTools request body)
+const LEAD_TYPE_MAP: Record<string, string> = {
+  for_sale:       "mls_active",
+  preforeclosure: "preforeclosure",
+  mls_active:     "mls_active",
+  mls_pending:    "mls_pending",
+  absentee_owner: "absentee_owner",
+  vacant_home:    "vacant_home",
+  high_equity:    "high_equity",
+  free_and_clear: "free_and_clear",
+};
+
+const RAW_LEAD_TYPES: string[] = (process.env.PROPWIRE_LEAD_TYPES ?? "for_sale")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+const API_LEAD_TYPE_FILTERS: string[] = RAW_LEAD_TYPES
+  .map((t) => LEAD_TYPE_MAP[t] ?? t)
+  .filter((v, i, a) => a.indexOf(v) === i);
+
+const API_ENDPOINT       = "api.propwire.com";
+const OXYLABS_HOST       = "realtime.oxylabs.io";
 const OXYLABS_PATH       = "/v1/queries";
 
-const SESSION_COOKIE     = process.env.PROPWIRE_SESSION_COOKIE ?? "";
-
-const REQUEST_TIMEOUT_MS = 120_000;
-const BETWEEN_PAGE_MS    = 3_000;
-const BETWEEN_DETAIL_MS  = 2_000;
+const API_TIMEOUT_MS     = 30_000;
+const OXYLABS_TIMEOUT_MS = 120_000;
+const BETWEEN_PAGE_MS    = 2_000;
 const DEBUG_PAGES        = 3;
-
-const MAX_PAGES          = Number(process.env.PROPWIRE_MAX_PAGES    ?? 10);
-const DETAIL_LIMIT       = Number(process.env.PROPWIRE_DETAIL_LIMIT ?? 20);
-
-// Lead types to search for — covers both on-market and motivated sellers
-const LEAD_TYPES: string[] = (process.env.PROPWIRE_LEAD_TYPES ?? "for_sale")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
 
 // ── Market definitions ────────────────────────────────────────────────────────
 
 interface PropwireMarket {
-  name:      string;   // human-readable label for logs
-  state:     string;   // two-letter state code
-  stateName: string;   // full state name
-  city?:     string;   // optional city-level filter
+  name:      string;
+  state:     string;
+  stateName: string;
+  city?:     string;
 }
 
 const DEFAULT_MARKETS: PropwireMarket[] = [
@@ -141,9 +127,414 @@ function getMarkets(): PropwireMarket[] {
   return (config.sources as any)?.propwire?.markets ?? DEFAULT_MARKETS;
 }
 
-// ── Search URL builder ────────────────────────────────────────────────────────
+// ── Decompression ─────────────────────────────────────────────────────────────
 
-function buildSearchUrl(market: PropwireMarket, page: number): string {
+async function decompress(buf: Buffer, encoding: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const enc = encoding.toLowerCase().trim();
+    if (enc === "gzip" || enc === "x-gzip") {
+      zlib.gunzip(buf, (e, r) => (e ? reject(e) : resolve(r)));
+    } else if (enc === "deflate") {
+      zlib.inflate(buf, (e, r) => {
+        if (e) zlib.inflateRaw(buf, (e2, r2) => (e2 ? reject(e2) : resolve(r2)));
+        else resolve(r);
+      });
+    } else if (enc === "br") {
+      zlib.brotliDecompress(buf, (e, r) => (e ? reject(e) : resolve(r)));
+    } else {
+      resolve(buf);
+    }
+  });
+}
+
+// ── Proxy CONNECT tunnel ──────────────────────────────────────────────────────
+//
+// Opens an HTTP CONNECT tunnel through the proxy, then performs a TLS handshake
+// over the tunnel socket and sends the HTTPS request manually.
+// This is required because DataDome blocks datacenter IPs — the residential
+// proxy IP passes the bot check.
+
+async function httpsPostViaProxy(
+  hostname:  string,
+  reqPath:   string,
+  headers:   Record<string, string>,
+  body:      string,
+  timeoutMs: number = API_TIMEOUT_MS
+): Promise<{ status: number; body: string } | null> {
+  let proxyHost: string;
+  let proxyPort: number;
+  let proxyAuth: string | null = null;
+
+  try {
+    const u   = new URL(PROXY_URL);
+    proxyHost = u.hostname;
+    proxyPort = parseInt(u.port || "8080", 10);
+    if (u.username && u.password) {
+      proxyAuth = Buffer.from(
+        `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`
+      ).toString("base64");
+    }
+  } catch {
+    logger.error(`[propwire] Invalid PROXY_URL: ${PROXY_URL}`);
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    const connectHeaders: Record<string, string> = {
+      "Host":       `${hostname}:443`,
+      "User-Agent": "Mozilla/5.0",
+    };
+    if (proxyAuth) connectHeaders["Proxy-Authorization"] = `Basic ${proxyAuth}`;
+
+    logger.debug(`[propwire] Proxy CONNECT ${proxyHost}:${proxyPort} → ${hostname}:443`);
+
+    const connectReq = http.request({
+      host:    proxyHost,
+      port:    proxyPort,
+      method:  "CONNECT",
+      path:    `${hostname}:443`,
+      headers: connectHeaders,
+    });
+
+    const timer = setTimeout(() => {
+      connectReq.destroy();
+      logger.warn("[propwire] Proxy CONNECT timeout");
+      resolve(null);
+    }, timeoutMs);
+
+    connectReq.on("error", (err: any) => {
+      clearTimeout(timer);
+      logger.error(`[propwire] Proxy CONNECT error: ${err.message}`);
+      resolve(null);
+    });
+
+    connectReq.on("connect", (res: any, socket: any) => {
+      if (res.statusCode !== 200) {
+        clearTimeout(timer);
+        logger.error(`[propwire] Proxy CONNECT rejected: HTTP ${res.statusCode}`);
+        socket.destroy();
+        resolve(null);
+        return;
+      }
+
+      // TLS handshake over the tunnel
+      const tlsSocket = tls.connect({
+        host:               hostname,
+        socket,
+        servername:         hostname,
+        rejectUnauthorized: true,
+      });
+
+      tlsSocket.on("error", (err: any) => {
+        clearTimeout(timer);
+        logger.warn(`[propwire] TLS error: ${err.message}`);
+        resolve(null);
+      });
+
+      tlsSocket.on("secureConnect", () => {
+        // Build raw HTTP/1.1 request
+        const bodyBuf  = Buffer.from(body, "utf-8");
+        const allHdrs  = { ...headers, "Content-Length": bodyBuf.length.toString() };
+        const reqLines =
+          `POST ${reqPath} HTTP/1.1\r\n` +
+          `Host: ${hostname}\r\n` +
+          Object.entries(allHdrs).map(([k, v]) => `${k}: ${v}`).join("\r\n") +
+          "\r\n\r\n";
+
+        tlsSocket.write(reqLines);
+        tlsSocket.write(bodyBuf);
+
+        const chunks: Buffer[] = [];
+        tlsSocket.on("data",  (c: Buffer) => chunks.push(c));
+        tlsSocket.on("end",   () => {
+          clearTimeout(timer);
+          try {
+            const raw        = Buffer.concat(chunks).toString("binary");
+            const headerEnd  = raw.indexOf("\r\n\r\n");
+            if (headerEnd === -1) { resolve(null); return; }
+
+            const headerSection = raw.slice(0, headerEnd);
+            const statusMatch   = headerSection.match(/^HTTP\/\d\.?\d? (\d+)/);
+            const status        = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+            const rawBodyStr    = raw.slice(headerEnd + 4);
+
+            // Decode chunked transfer encoding if present
+            const isChunked = /transfer-encoding:\s*chunked/i.test(headerSection);
+            let decoded = rawBodyStr;
+            if (isChunked) {
+              try {
+                let result = "";
+                let rem    = rawBodyStr;
+                while (rem.length > 0) {
+                  const crlf = rem.indexOf("\r\n");
+                  if (crlf === -1) break;
+                  const sz = parseInt(rem.slice(0, crlf), 16);
+                  if (isNaN(sz) || sz === 0) break;
+                  result += rem.slice(crlf + 2, crlf + 2 + sz);
+                  rem     = rem.slice(crlf + 2 + sz + 2);
+                }
+                decoded = result;
+              } catch { /* fall through to raw */ }
+            }
+
+            // Handle content-encoding (gzip / br / deflate)
+            const encMatch = headerSection.match(/content-encoding:\s*(\S+)/i);
+            const enc      = encMatch?.[1]?.trim() ?? "";
+            if (enc === "gzip" || enc === "br" || enc === "deflate") {
+              decompress(Buffer.from(decoded, "binary"), enc)
+                .then((buf) => resolve({ status, body: buf.toString("utf-8") }))
+                .catch(() => resolve({ status, body: decoded }));
+            } else {
+              resolve({ status, body: decoded });
+            }
+          } catch (err: any) {
+            logger.warn(`[propwire] Response parse error: ${err.message}`);
+            resolve(null);
+          }
+        });
+        tlsSocket.on("error", (err: any) => {
+          clearTimeout(timer);
+          logger.warn(`[propwire] TLS socket error: ${err.message}`);
+          resolve(null);
+        });
+      });
+    });
+
+    connectReq.end();
+  });
+}
+
+// ── Generic HTTPS POST (direct, no proxy) ────────────────────────────────────
+
+async function httpsPostDirect(
+  hostname:  string,
+  reqPath:   string,
+  headers:   Record<string, string>,
+  body:      string,
+  timeoutMs: number = API_TIMEOUT_MS
+): Promise<{ status: number; body: string } | null> {
+  return new Promise((resolve) => {
+    const req = https.request(
+      { hostname, path: reqPath, method: "POST", family: 4, headers },
+      (res: http.IncomingMessage) => {
+        const chunks: Buffer[] = [];
+        const enc = (res.headers["content-encoding"] ?? "").trim();
+        const stream: NodeJS.ReadableStream =
+          enc === "gzip"    ? res.pipe(zlib.createGunzip())           :
+          enc === "deflate" ? res.pipe(zlib.createInflate())          :
+          enc === "br"      ? res.pipe(zlib.createBrotliDecompress()) :
+          res as any;
+
+        stream.on("data", (c: Buffer) => chunks.push(c));
+        stream.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf-8") })
+        );
+        stream.on("error", (err: any) => {
+          logger.warn(`[propwire] stream error: ${err.message}`);
+          resolve(null);
+        });
+      }
+    );
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
+    req.on("error", (err: any) => {
+      logger.error(`[propwire] request error [${err.code ?? "?"}]: ${err.message}`);
+      resolve(null);
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ── Unified POST: proxy if available, else direct ────────────────────────────
+
+async function httpsPost(
+  hostname:  string,
+  reqPath:   string,
+  headers:   Record<string, string>,
+  body:      string,
+  timeoutMs: number = API_TIMEOUT_MS
+): Promise<{ status: number; body: string } | null> {
+  if (PROXY_URL) {
+    return httpsPostViaProxy(hostname, reqPath, headers, body, timeoutMs);
+  }
+  return httpsPostDirect(hostname, reqPath, headers, body, timeoutMs);
+}
+
+// ── Tier 2: Inertia XHR ───────────────────────────────────────────────────────
+
+async function fetchPageTokenViaInertiaXhr(market: PropwireMarket): Promise<string | null> {
+  const cookieStr = [
+    RAW_COOKIE,
+    DATADOME_COOKIE ? `datadome=${DATADOME_COOKIE}` : "",
+    XSRF_TOKEN      ? `XSRF-TOKEN=${encodeURIComponent(XSRF_TOKEN)}` : "",
+  ].filter(Boolean).join("; ");
+
+  if (!cookieStr) return null;
+
+  const filters = encodeURIComponent(JSON.stringify({
+    locations: [{
+      searchType: market.city ? "C" : "T",
+      state:      market.state,
+      stateName:  market.stateName,
+      title:      market.city ? `${market.city}, ${market.state}` : `${market.stateName}, USA`,
+      ...(market.city ? { city: market.city } : {}),
+    }],
+  }));
+  const getPath = `/search?filters=${filters}`;
+
+  logger.debug(`[propwire] Inertia XHR GET ${getPath.slice(0, 80)}…`);
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: "propwire.com",
+        path:     getPath,
+        method:   "GET",
+        family:   4,
+        headers: {
+          "accept":            "application/json, text/plain, */*",
+          "accept-encoding":   "gzip, deflate, br",
+          "accept-language":   "en-US,en;q=0.9",
+          "cookie":            cookieStr,
+          "referer":           "https://propwire.com/search",
+          "user-agent":        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+          "x-inertia":         "true",
+          "x-requested-with":  "XMLHttpRequest",
+          ...(XSRF_TOKEN ? { "x-xsrf-token": XSRF_TOKEN } : {}),
+        },
+      },
+      (res: http.IncomingMessage) => {
+        const chunks: Buffer[] = [];
+        const enc = (res.headers["content-encoding"] ?? "").trim();
+        const stream: NodeJS.ReadableStream =
+          enc === "gzip"    ? res.pipe(zlib.createGunzip())           :
+          enc === "deflate" ? res.pipe(zlib.createInflate())          :
+          enc === "br"      ? res.pipe(zlib.createBrotliDecompress()) :
+          res as any;
+
+        stream.on("data", (c: Buffer) => chunks.push(c));
+        stream.on("end", () => {
+          const raw    = Buffer.concat(chunks).toString("utf-8");
+          const status = res.statusCode ?? 0;
+          logger.debug(`[propwire] Inertia XHR HTTP ${status} body=${raw.length}ch`);
+
+          if (status === 403) {
+            logger.warn("[propwire] Inertia XHR 403 — DataDome blocking.");
+            resolve(null); return;
+          }
+          if (status !== 200) { resolve(null); return; }
+
+          saveFile("propwire_inertia.json", raw.slice(0, 100_000));
+
+          let parsed: any;
+          try { parsed = JSON.parse(raw); }
+          catch { logger.warn("[propwire] Inertia XHR: not JSON"); resolve(null); return; }
+
+          const token =
+            parsed?.props?.token ??
+            parsed?.props?.auth?.token ??
+            parsed?.token ?? null;
+
+          if (token && typeof token === "string" && token.length > 50) {
+            logger.info(`[propwire] ✓ Token from Inertia XHR (${token.length} chars)`);
+            resolve(token);
+          } else {
+            resolve(null);
+          }
+        });
+        stream.on("error", (err: any) => {
+          logger.warn(`[propwire] Inertia stream: ${err.message}`);
+          resolve(null);
+        });
+      }
+    );
+    req.setTimeout(API_TIMEOUT_MS, () => { req.destroy(); resolve(null); });
+    req.on("error", (err: any) => {
+      logger.error(`[propwire] Inertia XHR: ${err.message}`);
+      resolve(null);
+    });
+    req.end();
+  });
+}
+
+// ── Tier 3: Oxylabs render:html ───────────────────────────────────────────────
+
+async function oxylabsFetchHtml(targetUrl: string): Promise<string | null> {
+  if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) return null;
+
+  const sessionCookies: Array<{ key: string; value: string }> = [];
+  if (RAW_COOKIE) {
+    const eqIdx = RAW_COOKIE.indexOf("=");
+    sessionCookies.push(eqIdx > 0 && eqIdx < 50
+      ? { key: RAW_COOKIE.slice(0, eqIdx).trim(), value: RAW_COOKIE.slice(eqIdx + 1).trim() }
+      : { key: "propwire_session", value: RAW_COOKIE.trim() }
+    );
+  }
+
+  const payload = {
+    source:            "universal",
+    url:               targetUrl,
+    render:            "html",
+    geo_location:      "United States",
+    user_agent_type:   "desktop_chrome",
+    wait_for_selector: "#app",
+    wait:              5000,
+    context: [
+      { key: "follow_redirects", value: true },
+      ...(sessionCookies.length > 0 ? [{ key: "cookies", value: sessionCookies }] : []),
+    ],
+  };
+
+  const bodyStr = JSON.stringify(payload);
+  const authStr = Buffer.from(`${OXYLABS_USERNAME}:${OXYLABS_PASSWORD}`).toString("base64");
+
+  logger.debug(`[propwire] Oxylabs → ${targetUrl.slice(0, 80)}…`);
+
+  const result = await httpsPostDirect(
+    OXYLABS_HOST, OXYLABS_PATH,
+    {
+      "Content-Type":    "application/json",
+      "Authorization":   `Basic ${authStr}`,
+      "Content-Length":  Buffer.byteLength(bodyStr).toString(),
+      "Accept-Encoding": "gzip, deflate, br",
+    },
+    bodyStr, OXYLABS_TIMEOUT_MS
+  );
+
+  if (!result) return null;
+  if (result.status === 400) { logger.error(`[propwire] Oxylabs 400: ${result.body.slice(0, 300)}`); return null; }
+  if (result.status === 401) { logger.error("[propwire] Oxylabs 401 — invalid credentials"); return null; }
+  if (result.status !== 200) { logger.warn(`[propwire] Oxylabs HTTP ${result.status}`); return null; }
+
+  let envelope: any;
+  try { envelope = JSON.parse(result.body); }
+  catch { logger.warn("[propwire] Could not parse Oxylabs envelope"); return null; }
+
+  const r0      = envelope?.results?.[0];
+  const iStatus = r0?.status_code ?? 200;
+  const content = r0?.content ?? "";
+
+  logger.debug(`[propwire] Oxylabs inner=${iStatus} content=${content.length}ch`);
+
+  if (iStatus === 403 || iStatus === 401) {
+    logger.warn(`[propwire] Oxylabs inner ${iStatus} — cookie expired`);
+    return null;
+  }
+  if (!content || content.length < 500) {
+    logger.warn(`[propwire] Oxylabs short content (${content.length}ch) — blocked`);
+    return null;
+  }
+
+  return content;
+}
+
+// ── Direct API call to api.propwire.com ──────────────────────────────────────
+
+async function callPropertySearchApi(
+  token:       string,
+  market:      PropwireMarket,
+  resultIndex: number = 0
+): Promise<any | null> {
   const locationEntry: Record<string, any> = {
     searchType: market.city ? "C" : "T",
     state:      market.state,
@@ -154,262 +545,102 @@ function buildSearchUrl(market: PropwireMarket, page: number): string {
   };
   if (market.city) locationEntry.city = market.city;
 
-  const filters: Record<string, any> = {
-    locations:      [locationEntry],
-    lead_type:      LEAD_TYPES,
-    property_type:  ["sfr", "mfr"],
-    estimated_value: { max: config.filter.maxPrice },
+  const body: Record<string, any> = {
+    size:              PAGE_SIZE,
+    result_index:      resultIndex,
+    house:             true,
+    locations:         [locationEntry],
+    lead_type_filters: API_LEAD_TYPE_FILTERS,
+    estimated_value:   { max: config.filter.maxPrice },
   };
 
-  if (LEAD_TYPES.includes("for_sale")) {
-    filters.mls_status = ["Active"];
-  }
+  const bodyStr = JSON.stringify(body);
 
-  const params = new URLSearchParams({ filters: JSON.stringify(filters) });
-  if (page > 1) params.set("page", String(page));
+  // Build cookie string — datadome is required to pass bot check
+  const cookieParts: string[] = [];
+  if (DATADOME_COOKIE) cookieParts.push(`datadome=${DATADOME_COOKIE}`);
+  if (RAW_COOKIE)      cookieParts.push(RAW_COOKIE);
+  const cookieStr = cookieParts.join("; ");
 
-  return `https://propwire.com/search?${params.toString()}`;
-}
+  logger.debug(
+    `[propwire] API POST /api/property_search ` +
+    `result_index=${resultIndex} market=${market.name} ` +
+    `lead_types=[${API_LEAD_TYPE_FILTERS.join(",")}] ` +
+    `proxy=${PROXY_URL ? "yes" : "no"} datadome=${DATADOME_COOKIE ? "yes" : "no"}`
+  );
 
-// ── Cookie parser ─────────────────────────────────────────────────────────────
-//
-// Converts PROPWIRE_SESSION_COOKIE env var into the Oxylabs cookie array
-// format: [{ key: "laravel_session", value: "eyJ..." }]
-//
-// The env var can be in two forms:
-//   1. Raw value only:  "eyJpdiI6..."
-//      → assumed to be laravel_session (Propwire's primary auth cookie)
-//   2. name=value pair: "laravel_session=eyJpdiI6..."
-//      → split on first "=" and use as-is
-//
-// If multiple cookies are needed, separate them with ";" in the env var:
-//   PROPWIRE_SESSION_COOKIE=laravel_session=eyJ...;XSRF-TOKEN=abc...
+  const requestHeaders: Record<string, string> = {
+    "Content-Type":    "application/json",
+    "Accept":          "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Authorization":   `Bearer ${token}`,
+    "Origin":          "https://propwire.com",
+    "Referer":         "https://propwire.com/",
+    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    "sec-ch-ua":       '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+    "sec-ch-ua-mobile":   "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest":  "empty",
+    "sec-fetch-mode":  "cors",
+    "sec-fetch-site":  "same-site",
+    "x-user-id":       "379361",
+    "priority":        "u=1, i",
+  };
 
-function parseCookieEnv(raw: string): Array<{ key: string; value: string }> {
-  if (!raw) return [];
+  if (cookieStr) requestHeaders["cookie"] = cookieStr;
 
-  return raw
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const eqIdx = part.indexOf("=");
-      if (eqIdx === -1) {
-        // No "=" — treat entire string as the laravel_session value
-        return { key: "laravel_session", value: part };
-      }
-      return {
-        key:   part.slice(0, eqIdx).trim(),
-        value: part.slice(eqIdx + 1).trim(),
-      };
-    });
-}
+  const result = await httpsPost(
+    API_ENDPOINT,
+    "/api/property_search",
+    requestHeaders,
+    bodyStr,
+    API_TIMEOUT_MS
+  );
 
-// ── Oxylabs client ────────────────────────────────────────────────────────────
-//
-// Cookie injection uses Oxylabs' force_cookies context flag with the
-// cookies array format. Passing a raw cookie string causes HTTP 400.
-//
-// Correct Oxylabs cookie context shape:
-//   { key: "force_cookies", value: true }
-//   { key: "cookies", value: [{ key: "laravel_session", value: "eyJ..." }] }
+  if (!result) return null;
 
-async function decompressBuffer(buf: Buffer, encoding: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const enc = encoding.toLowerCase().trim();
-    if (enc === "gzip" || enc === "x-gzip") {
-      zlib.gunzip(buf, (err, r) => (err ? reject(err) : resolve(r)));
-    } else if (enc === "deflate") {
-      zlib.inflate(buf, (err, r) => {
-        if (err) zlib.inflateRaw(buf, (e2, r2) => (e2 ? reject(e2) : resolve(r2)));
-        else resolve(r);
-      });
-    } else if (enc === "br") {
-      zlib.brotliDecompress(buf, (err, r) => (err ? reject(err) : resolve(r)));
-    } else {
-      resolve(buf);
-    }
-  });
-}
+  const { status, body: rawBody } = result;
+  logger.debug(`[propwire] API HTTP ${status} body=${rawBody.length}ch`);
 
-async function oxylabsFetch(
-  targetUrl:    string,
-  sessionCookie = SESSION_COOKIE
-): Promise<string | null> {
-  if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) {
-    logger.error("[propwire] OXYLABS_USERNAME / OXYLABS_PASSWORD not set in .env");
-    return null;
-  }
-
-  if (!sessionCookie) {
-    logger.error(
-      "[propwire] PROPWIRE_SESSION_COOKIE not set — Propwire returns empty results without auth.\n" +
-      "[propwire] Log into propwire.com → DevTools → Application → Cookies → " +
-      "copy 'laravel_session' value → add to .env"
+  if (status === 401) {
+    logger.warn(
+      "[propwire] API 401 — Bearer token expired.\n" +
+      "[propwire] HOW TO GET A FRESH TOKEN:\n" +
+      "[propwire]   1. Log into propwire.com in Chrome\n" +
+      "[propwire]   2. DevTools → Network → clear → perform any search\n" +
+      "[propwire]   3. Find: POST api.propwire.com/api/property_search\n" +
+      "[propwire]   4. Headers → Authorization: Bearer <value>\n" +
+      "[propwire]   5. Copy value after 'Bearer ' → set PROPWIRE_BEARER_TOKEN in .env\n" +
+      "[propwire]   6. Also copy datadome= from cookie header → PROPWIRE_DATADOME"
     );
     return null;
   }
 
-  // Build cookie array in the format Oxylabs requires.
-  // force_cookies:true must be a separate context entry — omitting it causes
-  // the cookies to be ignored even if the array is correctly formed.
-  const cookieArray = parseCookieEnv(sessionCookie);
-
-  const payload: Record<string, any> = {
-    source:          "universal",
-    url:             targetUrl,
-    render:          "html",
-    geo_location:    "United States",
-    user_agent_type: "desktop_chrome",
-    context: [
-      { key: "follow_redirects", value: true },
-      { key: "force_cookies",    value: true },
-      { key: "cookies",          value: cookieArray },
-    ],
-  };
-
-  const bodyStr = JSON.stringify(payload);
-  const authStr = Buffer.from(`${OXYLABS_USERNAME}:${OXYLABS_PASSWORD}`).toString("base64");
-
-  logger.debug(`[propwire] Oxylabs → ${targetUrl}`);
-  logger.debug(`[propwire] Cookie keys: [${cookieArray.map((c) => c.key).join(", ")}]`);
-
-  return new Promise((resolve) => {
-    const req = https.request(
-      {
-        hostname: OXYLABS_ENDPOINT,
-        path:     OXYLABS_PATH,
-        method:   "POST",
-        family:   4,
-        headers:  {
-          "Content-Type":    "application/json",
-          "Authorization":   `Basic ${authStr}`,
-          "Content-Length":  Buffer.byteLength(bodyStr).toString(),
-          "Accept-Encoding": "gzip, deflate, br",
-        },
-      },
-      (res: http.IncomingMessage) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", async () => {
-          const buf      = Buffer.concat(chunks);
-          const encoding = (res.headers["content-encoding"] ?? "").trim();
-          let dec: Buffer;
-          try { dec = encoding ? await decompressBuffer(buf, encoding) : buf; }
-          catch { dec = buf; }
-
-          const raw    = dec.toString("utf-8");
-          const status = res.statusCode ?? 0;
-
-          if (status === 400) {
-            // Log the body so we can see what Oxylabs rejected
-            logger.error(
-              `[propwire] Oxylabs HTTP 400 — malformed request payload.\n` +
-              `[propwire] Response: ${raw.slice(0, 500)}`
-            );
-            resolve(null); return;
-          }
-          if (status === 401) {
-            logger.error("[propwire] Oxylabs 401 — check OXYLABS_USERNAME / OXYLABS_PASSWORD");
-            resolve(null); return;
-          }
-          if (status === 429) {
-            logger.warn("[propwire] Oxylabs 429 — rate limited");
-            resolve(null); return;
-          }
-          if (status !== 200) {
-            logger.warn(`[propwire] Oxylabs HTTP ${status}: ${raw.slice(0, 300)}`);
-            resolve(null); return;
-          }
-
-          let envelope: any;
-          try { envelope = JSON.parse(raw); }
-          catch {
-            logger.warn("[propwire] Could not parse Oxylabs envelope");
-            resolve(null); return;
-          }
-
-          const result0     = envelope?.results?.[0];
-          const innerStatus = result0?.status_code ?? 200;
-          const content     = result0?.content ?? "";
-
-          if (innerStatus === 401 || innerStatus === 403) {
-            logger.warn(`[propwire] Inner HTTP ${innerStatus} — session cookie may be expired`);
-            resolve(null); return;
-          }
-          if (innerStatus === 429) {
-            logger.warn("[propwire] Inner 429 — waiting 10s");
-            await sleep(10_000);
-            resolve(null); return;
-          }
-          if (!content || content.length < 3_000) {
-            logger.warn(
-              `[propwire] Short content (${content.length} chars) — possible auth failure.\n` +
-              `[propwire] Check logs/propwire_search_*.html for login page indicators.`
-            );
-            resolve(null); return;
-          }
-
-          logger.debug(`[propwire] Oxylabs OK — ${content.length} chars, inner=${innerStatus}`);
-          resolve(content);
-        });
-        res.on("error", (err: any) => {
-          logger.warn(`[propwire] Stream error: ${err.message}`);
-          resolve(null);
-        });
-      }
+  if (status === 403) {
+    logger.warn(`[propwire] API 403 — response: ${rawBody.slice(0, 400)}`);
+    logger.warn(
+      "[propwire] 403 — DataDome bot check failed. Possible causes:\n" +
+      "[propwire]   • PROPWIRE_DATADOME cookie is expired — refresh from DevTools\n" +
+      "[propwire]   • PROXY_URL not set or proxy IP is blocked\n" +
+      "[propwire]   • Bearer token is expired — grab a fresh one from DevTools"
     );
-
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      logger.warn(`[propwire] Oxylabs timeout after ${REQUEST_TIMEOUT_MS / 1_000}s`);
-      req.destroy();
-      resolve(null);
-    });
-    req.on("error", (err: any) => {
-      logger.error(`[propwire] Request error [${err.code ?? "?"}]: ${err.message}`);
-      resolve(null);
-    });
-
-    req.write(bodyStr);
-    req.end();
-  });
-}
-
-// ── Block / auth detection ────────────────────────────────────────────────────
-
-const BLOCK_SIGNALS = [
-  "challenges.cloudflare.com",
-  'id="px-captcha"',
-  "Enable JavaScript and cookies to continue",
-  "Just a moment",
-  "__KASADA__",
-];
-
-function detectIssue(html: string): { blocked: boolean; noAuth: boolean; reason: string } {
-  const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "").toLowerCase();
-
-  const sig = BLOCK_SIGNALS.find((s) => html.toLowerCase().includes(s.toLowerCase()));
-  if (sig) return { blocked: true, noAuth: false, reason: `block signal: ${sig}` };
-
-  if (["access denied", "just a moment", "security check"].some((t) => title.includes(t)))
-    return { blocked: true, noAuth: false, reason: `block title: "${title}"` };
-
-  // Propwire-specific: page loads but shows login prompt — cookie is bad/expired
-  if (
-    html.includes("Sign In") &&
-    html.includes("Don't have an account") &&
-    !html.includes("__NEXT_DATA__")
-  ) {
-    return {
-      blocked: false,
-      noAuth:  true,
-      reason:  "login page — session cookie expired or invalid. " +
-               "Refresh PROPWIRE_SESSION_COOKIE: log into propwire.com → " +
-               "DevTools → Application → Cookies → copy 'laravel_session' value",
-    };
+    return null;
   }
 
-  return { blocked: false, noAuth: false, reason: "" };
+  if (status === 429) { logger.warn("[propwire] API 429 — rate limited"); return null; }
+
+  if (status !== 200) {
+    logger.warn(`[propwire] API HTTP ${status}: ${rawBody.slice(0, 300)}`);
+    return null;
+  }
+
+  try   { return JSON.parse(rawBody); }
+  catch {
+    logger.warn("[propwire] Could not parse API JSON");
+    logger.debug(`[propwire] Raw: ${rawBody.slice(0, 300)}`);
+    return null;
+  }
 }
 
 // ── File helpers ──────────────────────────────────────────────────────────────
@@ -425,17 +656,14 @@ function saveFile(filename: string, content: string): void {
   }
 }
 
-function marketSlug(market: PropwireMarket): string {
-  return `${market.city ?? market.state}_${market.state}`
-    .replace(/[^a-z0-9]/gi, "_")
-    .toLowerCase();
+function marketSlug(m: PropwireMarket): string {
+  return `${m.city ?? m.state}_${m.state}`.replace(/[^a-z0-9]/gi, "_").toLowerCase();
 }
 
 // ── Scraper ───────────────────────────────────────────────────────────────────
 
 export class PropwireScraper extends BaseScraper {
   readonly sourceName = "propwire";
-
   private allListings: RawListing[] = [];
 
   constructor(options: ScraperOptions = {}) {
@@ -443,234 +671,167 @@ export class PropwireScraper extends BaseScraper {
 
     const markets = getMarkets();
     logger.info(
-      `[propwire] ${markets.length} market(s), up to ${MAX_PAGES} page(s) each\n` +
-        markets.map((m) => `  • ${m.name}`).join("\n")
+      `[propwire] ${markets.length} market(s), up to ${MAX_PAGES} page(s) × ${PAGE_SIZE}/page\n` +
+      markets.map((m) => `  • ${m.name}`).join("\n")
     );
     logger.info(
-      `[propwire] Lead types: [${LEAD_TYPES.join(", ")}] | ` +
-      `Max price: $${config.filter.maxPrice.toLocaleString()}`
+      `[propwire] Lead types: [${RAW_LEAD_TYPES.join(", ")}] → API filters: [${API_LEAD_TYPE_FILTERS.join(", ")}]\n` +
+      `[propwire] Max price: $${config.filter.maxPrice.toLocaleString()}`
     );
-    logger.info(
-      `[propwire] Fetch mode: Oxylabs render:html | ` +
-      `Detail enrichment: ${DETAIL_LIMIT} listings`
-    );
+    logger.info(`[propwire] API endpoint: https://${API_ENDPOINT}/api/property_search`);
+    logger.info(`[propwire] Proxy: ${PROXY_URL ? PROXY_URL.replace(/:[^:@]+@/, ":***@") : "none (direct)"}`);
+    logger.info(`[propwire] DataDome cookie: ${DATADOME_COOKIE ? "set ✓" : "NOT SET ✗"}`);
 
-    if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) {
-      logger.error("[propwire] OXYLABS_USERNAME / OXYLABS_PASSWORD not set in .env");
-    }
-    if (!SESSION_COOKIE) {
-      logger.error(
-        "[propwire] PROPWIRE_SESSION_COOKIE not set in .env — results will be empty.\n" +
-        "[propwire] Log into propwire.com → DevTools → Application → Cookies → " +
-        "copy 'laravel_session' cookie value → add to .env as PROPWIRE_SESSION_COOKIE=<value>"
-      );
+    if (BEARER_TOKEN_ENV) {
+      logger.info(`[propwire] Token: PROPWIRE_BEARER_TOKEN ✓ (${BEARER_TOKEN_ENV.length} chars)`);
     } else {
-      // Log which cookie names were parsed so user can verify at startup
-      const parsed = parseCookieEnv(SESSION_COOKIE);
-      logger.info(`[propwire] Session cookies loaded: [${parsed.map((c) => c.key).join(", ")}]`);
+      logger.warn(
+        "[propwire] PROPWIRE_BEARER_TOKEN not set.\n" +
+        "[propwire] HOW TO GET IT:\n" +
+        "[propwire]   1. Log into propwire.com in Chrome\n" +
+        "[propwire]   2. DevTools → Network → clear → perform any search\n" +
+        "[propwire]   3. Find: POST api.propwire.com/api/property_search\n" +
+        "[propwire]   4. Request Headers → Authorization: Bearer eyJ...\n" +
+        "[propwire]   5. Copy value after 'Bearer ' → .env PROPWIRE_BEARER_TOKEN\n" +
+        "[propwire]   6. Copy datadome= from cookie header → .env PROPWIRE_DATADOME"
+      );
     }
   }
 
   override async run(): Promise<RawListing[]> {
-    logger.info(`[propwire] Starting`);
+    logger.info("[propwire] Starting");
     this.visited.clear();
     this.results     = [];
     this.allListings = [];
 
     const markets  = getMarkets();
     const rejected: Array<{ listing: RawListing; reason: string }> = [];
-    let   authFailed = false;
 
-    // ── Phase 1: Search pages per market ──────────────────────────────────
+    // ── Phase 1: Acquire Bearer token ────────────────────────────────────
+
+    let token: string | null = null;
+    let tokenExpired = false;
+
+    // Tier 1: env var
+    if (BEARER_TOKEN_ENV) {
+      token = BEARER_TOKEN_ENV;
+      logger.info(`[propwire] ✓ Tier 1: PROPWIRE_BEARER_TOKEN (${token.length} chars)`);
+    }
+
+    // Tier 2: Inertia XHR
+    if (!token && (RAW_COOKIE || DATADOME_COOKIE)) {
+      logger.info("[propwire] Tier 2: attempting Inertia XHR…");
+      const inertiaToken = await fetchPageTokenViaInertiaXhr(markets[0]);
+      if (inertiaToken && inertiaToken.length > 50) {
+        token = inertiaToken;
+        logger.info(`[propwire] ✓ Tier 2: Inertia XHR token (${token.length} chars)`);
+      }
+    }
+
+    // Tier 3: Oxylabs
+    if (!token && OXYLABS_USERNAME && OXYLABS_PASSWORD) {
+      logger.info("[propwire] Tier 3: attempting Oxylabs render:html…");
+      const fm = markets[0];
+      const shellFilters = encodeURIComponent(JSON.stringify({
+        locations: [{
+          searchType: "C", state: fm.state, stateName: fm.stateName,
+          title: `${fm.city}, ${fm.state}`, city: fm.city,
+        }],
+        lead_type: RAW_LEAD_TYPES, property_type: ["sfr", "mfr"],
+      }));
+      const shellHtml = await oxylabsFetchHtml(`https://propwire.com/search?filters=${shellFilters}`);
+      if (shellHtml) {
+        saveFile("propwire_shell.html", shellHtml);
+        const parsed = extractPropwireToken(shellHtml);
+        if (parsed && parsed.length > 50) {
+          token = parsed;
+          logger.info(`[propwire] ✓ Tier 3: Oxylabs token (${token.length} chars)`);
+        }
+      }
+    }
+
+    if (!token) {
+      logger.error(
+        "[propwire] No usable API Bearer token found.\n" +
+        "[propwire] Set PROPWIRE_BEARER_TOKEN in .env — see constructor warning above."
+      );
+      return [];
+    }
+
+    // ── Phase 2: Scrape via api.propwire.com ─────────────────────────────
+
+    logger.info("[propwire] Phase 2: calling api.propwire.com/api/property_search…");
 
     for (const market of markets) {
-      if (authFailed) break;
       if (this.results.length >= this.options.maxListings) {
-        logger.info(`[propwire] maxListings reached — skipping remaining markets`);
+        logger.info("[propwire] maxListings reached — skipping remaining markets");
         break;
       }
+      if (tokenExpired) break;
 
       logger.info(`[propwire] ── Market: ${market.name}`);
-      let knownPages = 0;
 
       for (let page = 1; page <= MAX_PAGES; page++) {
         if (this.results.length >= this.options.maxListings) break;
-        if (knownPages > 0 && page > knownPages) {
-          logger.info(`[propwire] All ${knownPages} pages fetched for ${market.name}`);
-          break;
-        }
 
-        const url = buildSearchUrl(market, page);
-        logger.info(`[propwire] ${market.name} page ${page}/${MAX_PAGES} → ${url}`);
+        const resultIndex = (page - 1) * PAGE_SIZE;
+        logger.info(`[propwire] ${market.name} page ${page}/${MAX_PAGES} (offset ${resultIndex})`);
 
-        const html = await oxylabsFetch(url);
-        if (!html) {
-          logger.warn(`[propwire] No HTML for ${market.name} page ${page} — stopping`);
-          break;
-        }
+        const apiData = await callPropertySearchApi(token, market, resultIndex);
 
-        if (page <= DEBUG_PAGES) {
-          saveFile(`propwire_search_${marketSlug(market)}_p${page}.html`, html);
-        }
-
-        const { blocked, noAuth, reason } = detectIssue(html);
-        if (blocked) {
-          logger.error(`[propwire] Blocked on ${market.name} p${page}: ${reason}`);
-          saveFile(`propwire_blocked_${marketSlug(market)}_p${page}.html`, html);
-          break;
-        }
-        if (noAuth) {
-          logger.error(`[propwire] Auth failed — ${reason}`);
-          authFailed = true;
-          break;
-        }
-
-        if (!html.includes("__NEXT_DATA__") && !html.includes("propwire")) {
-          logger.warn(`[propwire] Page doesn't look like Propwire — saving for inspection`);
-          saveFile(`propwire_unexpected_${marketSlug(market)}_p${page}.html`, html);
-          break;
-        }
-
-        const nextData = extractNextData(html);
-        if (!nextData) {
-          logger.warn(`[propwire] No __NEXT_DATA__ on ${market.name} p${page}`);
-          saveFile(`propwire_no_nextdata_${marketSlug(market)}_p${page}.html`, html);
+        if (!apiData) {
+          logger.warn(`[propwire] No data for ${market.name} p${page} — stopping market`);
+          if (page === 1 && this.allListings.length === 0) {
+            logger.error("[propwire] No results on first page — token likely expired or DataDome block");
+            tokenExpired = true;
+          }
           break;
         }
 
         if (page <= DEBUG_PAGES) {
           saveFile(
-            `propwire_json_${marketSlug(market)}_p${page}.json`,
-            JSON.stringify(nextData, null, 2)
+            `propwire_api_${marketSlug(market)}_p${page}.json`,
+            JSON.stringify(apiData, null, 2)
           );
         }
 
-        const { listings, allStale, totalPages } =
-          parsePropwireSearchPage(nextData);
-
-        if (page === 1 && totalPages > 0) {
-          knownPages = Math.min(totalPages, MAX_PAGES);
-          logger.info(`[propwire] ${market.name}: ${totalPages} total pages (cap ${knownPages})`);
-        }
+        const { listings, hasMore } = parsePropwireApiResponse(apiData, resultIndex);
 
         logger.info(
-          `[propwire] ${market.name} p${page}: ${listings.length} listing(s)` +
-          (allStale ? " — all stale" : "")
+          `[propwire] ${market.name} p${page}: ${listings.length} listings | hasMore=${hasMore}`
         );
 
         this.allListings.push(...listings);
 
         for (const listing of listings) {
           if (this.results.length >= this.options.maxListings) break;
-
-          if (!listing.url) {
-            rejected.push({ listing, reason: "no_url" }); continue;
-          }
-          if (this.visited.has(listing.url)) {
-            rejected.push({ listing, reason: "duplicate" }); continue;
-          }
+          if (!listing.url)                  { rejected.push({ listing, reason: "no_url" });    continue; }
+          if (this.visited.has(listing.url)) { rejected.push({ listing, reason: "duplicate" }); continue; }
           if (!this.passesFilter(listing)) {
             rejected.push({ listing, reason: "filtered" });
-            logger.debug(`[propwire] ✗ ${listing.address} @ ${listing.price}`);
+            logger.debug(`[propwire] ✗ filtered: ${listing.address} @ $${listing.price}`);
             continue;
           }
-
           this.visited.add(listing.url);
           this.results.push(listing);
           logger.info(
             `[propwire] ✓ [${this.results.length}/${this.options.maxListings}] ` +
             `${listing.address} @ $${listing.price?.toLocaleString() ?? "?"} ` +
-            ((listing as any).propwireEstimate
-              ? `| AVM $${(listing as any).propwireEstimate.toLocaleString()}`
-              : "| no AVM")
+            (listing.propwireEstimate ? `| AVM $${listing.propwireEstimate.toLocaleString()}` : "| no AVM")
           );
         }
 
-        if (allStale || listings.length === 0) break;
+        if (!hasMore || listings.length === 0) {
+          logger.info(`[propwire] ${market.name}: no more pages`);
+          break;
+        }
 
         await sleep(jitter(BETWEEN_PAGE_MS));
       }
     }
 
-    logger.info(
-      `[propwire] Phase 1 done — ${this.results.length} accepted, ${rejected.length} rejected`
-    );
+    logger.info(`[propwire] Done — ${this.results.length} accepted, ${rejected.length} rejected`);
 
-    // ── Phase 2: Detail page enrichment ───────────────────────────────────
-
-    if (!authFailed) {
-      const needsDetail = this.results
-        .filter((l) => (l as any).propwireEstimate == null)
-        .slice(0, DETAIL_LIMIT);
-
-      if (needsDetail.length > 0) {
-        logger.info(
-          `[propwire] Phase 2: detail enrichment for ${needsDetail.length} listing(s)`
-        );
-
-        for (let i = 0; i < needsDetail.length; i++) {
-          const listing = needsDetail[i];
-          const label   = `[${i + 1}/${needsDetail.length}]`;
-
-          logger.info(`[propwire] ${label} Detail: ${listing.address}`);
-
-          const html = await oxylabsFetch(listing.url);
-          if (!html) {
-            logger.warn(`[propwire] ${label} No HTML for detail page`);
-            await sleep(jitter(BETWEEN_DETAIL_MS));
-            continue;
-          }
-
-          if (i < DEBUG_PAGES) {
-            const id = (listing as any)._propwireId ?? i;
-            saveFile(`propwire_detail_${id}.html`, html);
-          }
-
-          const { noAuth, blocked, reason } = detectIssue(html);
-          if (noAuth || blocked) {
-            logger.warn(`[propwire] ${label} Detail issue: ${reason}`);
-            if (noAuth) { authFailed = true; break; }
-            await sleep(jitter(BETWEEN_DETAIL_MS));
-            continue;
-          }
-
-          const nextData = extractNextData(html);
-          if (!nextData) {
-            logger.debug(`[propwire] ${label} No __NEXT_DATA__ on detail page`);
-            await sleep(jitter(BETWEEN_DETAIL_MS));
-            continue;
-          }
-
-          if (i < DEBUG_PAGES) {
-            const id = (listing as any)._propwireId ?? i;
-            saveFile(`propwire_detail_${id}.json`, JSON.stringify(nextData, null, 2));
-          }
-
-          const est = extractEstimateFromDetailPage(nextData, listing.address ?? listing.url);
-          if (est) {
-            (listing as any).propwireEstimate = est.estimatedValue;
-            (listing as any)._estimatedEquity = est.estimatedEquity;
-            (listing as any)._taxAssessment   = est.taxAssessment;
-            logger.info(
-              `[propwire] ${label} ✓ AVM $${est.estimatedValue.toLocaleString()} ` +
-              `for ${listing.address}` +
-              (est.estimatedEquity ? ` | equity $${est.estimatedEquity.toLocaleString()}` : "")
-            );
-          } else {
-            logger.debug(`[propwire] ${label} No AVM on detail page`);
-          }
-
-          await sleep(jitter(BETWEEN_DETAIL_MS));
-        }
-
-        const withAvm = this.results.filter((l) => (l as any).propwireEstimate != null).length;
-        logger.info(
-          `[propwire] Phase 2 done — AVM coverage: ${withAvm}/${this.results.length}`
-        );
-      }
-    }
-
-    // ── JSON dump ─────────────────────────────────────────────────────────
     saveFile(
       `${this.sourceName}.json`,
       JSON.stringify(
@@ -680,19 +841,17 @@ export class PropwireScraper extends BaseScraper {
           allListings: this.allListings,
           generatedAt: new Date().toISOString(),
         },
-        null,
-        2
+        null, 2
       )
     );
 
-    logger.info(`[propwire] Finished — ${this.results.length} listings`);
+    const withAvm = this.results.filter((l) => l.propwireEstimate != null).length;
+    logger.info(
+      `[propwire] Finished — ${this.results.length} listings | AVM coverage: ${withAvm}/${this.results.length}`
+    );
     return this.results;
   }
 
-  protected async scrapePage(_h: BrowserHandle, _p: number): Promise<RawListing[]> {
-    return [];
-  }
-  protected shouldContinue(_p: number): boolean {
-    return false;
-  }
+  protected async scrapePage(_h: BrowserHandle, _p: number): Promise<RawListing[]> { return []; }
+  protected shouldContinue(_p: number): boolean { return false; }
 }

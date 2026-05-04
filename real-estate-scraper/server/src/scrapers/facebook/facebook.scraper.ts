@@ -34,8 +34,8 @@ const DEFAULT_GROUP_URLS: string[] = parseFacebookGroupUrls(
 );
 
 // 20 passes × 900px = 18,000px — enough to load 25–40 posts on most groups
-const SCROLL_PASSES = 20;
-const SCROLL_STEP   = 900;
+const SCROLL_PASSES = 50;
+const SCROLL_STEP   = 1200;
 
 // Only close/dismiss selectors — NEVER "Log In" (that navigates away)
 const MODAL_CLOSE_SELECTORS = [

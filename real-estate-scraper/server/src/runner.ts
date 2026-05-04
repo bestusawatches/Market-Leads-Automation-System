@@ -1,8 +1,8 @@
 // src/runner.ts
 import { RawListing, ListingUpsertPayload, DealScore } from "./types/listing";
-import { upsertMany, getSummaryStats } from "./db/repository";
+import { upsertMany, upsertZillowListings, upsertRedfinListings, upsertRealtorListings, upsertPropwireListings, getSummaryStats } from "./db/repository";
 import { logger } from "./utils/logger";
-import { enrichRawListings } from "./enrichers/zillow/index.enricher";
+
 
 // ── Underwriting engine ───────────────────────────────────────────────────────
 
@@ -62,25 +62,23 @@ export async function runScrapers(options: RunOptions): Promise<void> {
       continue;
     }
 
-    // ── Zillow enrichment disabled ─────────────────────────────────────
-    // logger.info(
-    //   `[${key}] Running Zillow enrichment on ${rawListings.length} listings`
-    // );
-    // try {
-    //   rawListings = await enrichRawListings(rawListings);
-    // } catch (err) {
-    //   // Enrichment failure is non-fatal — listings still save without zestimate
-    //   logger.error(
-    //     `[${key}] Zillow enrichment failed — continuing without zestimates: ${err}`
-    //   );
-    // }
-
-    // Score listings — zestimate is now attached where Zillow found a match,
-    // so scoreListings will use real ARV instead of falling back to price
+    // Score listings for deal evaluation
     const payloads = scoreListings(rawListings);
 
     try {
-      await upsertMany(payloads);
+      // Route to appropriate table based on source
+      if (key === "zillow") {
+        await upsertZillowListings(payloads);
+      } else if (key === "redfin") {
+        await upsertRedfinListings(payloads);
+      } else if (key === "realtor") {
+        await upsertRealtorListings(payloads);
+      } else if (key === "propwire") {
+        await upsertPropwireListings(payloads);
+      } else {
+        await upsertMany(payloads);
+      }
+
       totalSaved += payloads.length;
       logger.info(`[${key}] Saved ${payloads.length} listings to DB`);
     } catch (err) {

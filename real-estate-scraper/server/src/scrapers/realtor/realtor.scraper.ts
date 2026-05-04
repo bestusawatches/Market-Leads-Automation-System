@@ -50,8 +50,6 @@ const OXYLABS_PATH       = "/v1/queries";
 
 const REQUEST_TIMEOUT_MS  = 120_000;
 const BETWEEN_PAGE_MS     = 3_000;
-const MAX_PAGES           = Number(process.env.REALTOR_MAX_PAGES    ?? 10);
-const MAX_LISTINGS        = Number(process.env.REALTOR_MAX_LISTINGS ?? 200);
 const FETCH_ESTIMATES     = process.env.REALTOR_FETCH_ESTIMATES !== "false";
 
 // How many detail pages to fetch simultaneously.
@@ -580,7 +578,7 @@ export class RealtorScraper extends BaseScraper {
 
     const urls = getSearchUrls();
     logger.info(
-      `[realtor] ${urls.length} search URL(s), up to ${MAX_PAGES} page(s) each\n` +
+      `[realtor] ${urls.length} search URL(s), up to ${this.options.maxPages} page(s) each\n` +
       urls.map((u) => `  • ${u}`).join("\n")
     );
     logger.info(
@@ -616,9 +614,9 @@ export class RealtorScraper extends BaseScraper {
       this.stopPaging = false;
       this.knownPages = 0;
 
-      for (let page = 1; page <= MAX_PAGES; page++) {
-        if (this.results.length >= MAX_LISTINGS) {
-          logger.info(`[realtor] maxListings (${MAX_LISTINGS}) reached`);
+      for (let page = 1; page <= this.options.maxPages; page++) {
+        if (this.results.length >= this.options.maxListings) {
+          logger.info(`[realtor] maxListings (${this.options.maxListings}) reached`);
           break;
         }
 
@@ -638,7 +636,7 @@ export class RealtorScraper extends BaseScraper {
         await attachEstimates(pageListings, this.sessionId);
 
         for (const listing of pageListings) {
-          if (this.results.length >= MAX_LISTINGS) break;
+          if (this.results.length >= this.options.maxListings) break;
 
           if (!listing.url) {
             rejected.push({ listing, reason: "no_url" });
@@ -659,7 +657,7 @@ export class RealtorScraper extends BaseScraper {
 
           const est = (listing as any).zestimate;
           logger.info(
-            `[realtor] ✓ [${this.results.length}/${MAX_LISTINGS}] ` +
+            `[realtor] ✓ [${this.results.length}/${this.options.maxListings}] ` +
             `${listing.address ?? listing.title} @ ` +
             `$${listing.price?.toLocaleString() ?? "?"} ` +
             (est ? `| Estimate $${est.toLocaleString()}` : "| no estimate")
@@ -773,7 +771,7 @@ export class RealtorScraper extends BaseScraper {
     const { listings, allStale, totalPages } = parseRealtorResults(nextData);
 
     if (pageNumber === 1 && totalPages > 0) {
-      this.knownPages = Math.min(totalPages, MAX_PAGES);
+      this.knownPages = Math.min(totalPages, this.options.maxPages);
       logger.info(
         `[realtor] ${totalPages} total pages (capped at ${this.knownPages})`
       );
@@ -795,7 +793,7 @@ export class RealtorScraper extends BaseScraper {
   ): boolean {
     if (this.stopPaging)                                 return false;
     if (last.length === 0)                               return false;
-    if (page >= MAX_PAGES)                               return false;
+    if (page >= this.options.maxPages)                               return false;
     if (this.knownPages > 0 && page >= this.knownPages) return false;
     return true;
   }

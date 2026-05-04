@@ -1,28 +1,4 @@
 // src/scrapers/offmarket/offmarket.scraper.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// offmarket.com — ListingPro WordPress theme, Wordfence + rate limiting.
-//
-// What we learned from the real HTML:
-//   ✓ Working URL:   https://www.offmarket.com/listing-category/residential/
-//   ✓ Cards use:     data-posturl, data-raw-price, data-bed, data-bath, data-buildingsqft
-//   ✓ Pagination:    AJAX "Load More" button — NOT page URLs
-//                    POSTs to /wp-admin/admin-ajax.php with action=ajax_listing_load_more
-//
-// Fixes in this version:
-//   ✓ AJAX Load More — listedIds and nonce are now re-read directly from the
-//     live page DOM (not from the HTML snapshot) to ensure they are always
-//     up-to-date and correctly escaped.
-//   ✓ Location filter — now checks state + city + address + URL slug so that
-//     listings without a parsed address are not incorrectly dropped.
-//   ✓ No maxListings cap — scrapes all available pages.
-//   ✓ 30-day date filter — fail-open when date is missing/unparseable.
-//
-// .env:
-//   PROXY_URL=http://user:pass@us-proxy-host:port   (US proxy strongly recommended)
-//   OFFMARKET_SEARCH_URL=https://www.offmarket.com/listing-category/residential/
-//   OFFMARKET_STATES=OH,WI          (comma-separated state codes to keep)
-//   OFFMARKET_CITIES=Cleveland,Columbus,Milwaukee   (optional city filter)
-// ─────────────────────────────────────────────────────────────────────────────
 
 import { Page } from "playwright";
 import { BaseScraper, ScraperOptions } from "../base.scraper";
@@ -39,16 +15,43 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 
-const HOME_URL  = "https://www.offmarket.com";
-const AJAX_URL  = "https://www.offmarket.com/wp-admin/admin-ajax.php";
+const HOME_URL = "https://www.offmarket.com";
+const AJAX_URL = "https://www.offmarket.com/wp-admin/admin-ajax.php";
 
-const DEFAULT_SEARCH_URL =
-  process.env.OFFMARKET_SEARCH_URL ||
-  "https://www.offmarket.com/listing-category/residential/";
+// ── State abbreviation → full lowercase name map ───────────────────────────
+//
+// Used to build the &lp_s_loc= query param that offmarket.com requires
+// alongside ?state=XX for proper state-level filtering.
+// e.g. https://www.offmarket.com/listing-category/residential/?state=OH&lp_s_loc=ohio
 
-// State/city filters — read from .env
-// e.g.  OFFMARKET_STATES=OH,WI
-//       OFFMARKET_CITIES=Cleveland,Columbus,Milwaukee,Toledo,Akron
+const STATE_FULL_NAME: Record<string, string> = {
+  AL: "alabama",      AK: "alaska",       AZ: "arizona",      AR: "arkansas",
+  CA: "california",   CO: "colorado",     CT: "connecticut",  DE: "delaware",
+  FL: "florida",      GA: "georgia",      HI: "hawaii",       ID: "idaho",
+  IL: "illinois",     IN: "indiana",      IA: "iowa",         KS: "kansas",
+  KY: "kentucky",     LA: "louisiana",    ME: "maine",        MD: "maryland",
+  MA: "massachusetts",MI: "michigan",     MN: "minnesota",    MS: "mississippi",
+  MO: "missouri",     MT: "montana",      NE: "nebraska",     NV: "nevada",
+  NH: "new hampshire",NJ: "new jersey",   NM: "new mexico",   NY: "new york",
+  NC: "north carolina",ND: "north dakota",OH: "ohio",         OK: "oklahoma",
+  OR: "oregon",       PA: "pennsylvania", RI: "rhode island", SC: "south carolina",
+  SD: "south dakota", TN: "tennessee",    TX: "texas",        UT: "utah",
+  VT: "vermont",      VA: "virginia",     WA: "washington",   WV: "west virginia",
+  WI: "wisconsin",    WY: "wyoming",      DC: "district of columbia",
+};
+
+// ── State-specific search URLs ─────────────────────────────────────────────
+//
+// offmarket.com requires BOTH params for reliable state filtering:
+//   ?state=OH        — uppercase 2-letter abbreviation
+//   &lp_s_loc=ohio   — lowercase full state name
+//
+// Without &lp_s_loc= the server ignores the state filter and returns all US
+// listings.  Without ?state= the location sidebar won't highlight correctly.
+//
+// Fallback: if OFFMARKET_SEARCH_URL is set explicitly, honour it (single-URL
+// mode).  Otherwise, derive one URL per entry in FILTER_STATES.
+
 const FILTER_STATES: string[] = process.env.OFFMARKET_STATES
   ? process.env.OFFMARKET_STATES.split(",").map((s) => s.trim().toUpperCase())
   : ["OH", "WI"];
@@ -57,56 +60,65 @@ const FILTER_CITIES: string[] = process.env.OFFMARKET_CITIES
   ? process.env.OFFMARKET_CITIES.split(",").map((s) => s.trim().toLowerCase())
   : [];
 
+// Build state-filtered search URLs using both ?state=XX and &lp_s_loc=name.
+function buildSearchUrls(): string[] {
+  if (process.env.OFFMARKET_SEARCH_URL) {
+    return [process.env.OFFMARKET_SEARCH_URL];
+  }
+
+  return FILTER_STATES.map((st) => {
+    const abbr     = st.toUpperCase();
+    const fullName = STATE_FULL_NAME[abbr];
+
+    if (!fullName) {
+      logger.warn(
+        `[offmarket] No full-name mapping for state "${abbr}" — ` +
+        `&lp_s_loc= will be omitted; results may not be filtered correctly`
+      );
+      return `https://www.offmarket.com/listing-category/residential/?state=${abbr}`;
+    }
+
+    // Both params required for proper server-side filtering
+    const encodedName = encodeURIComponent(fullName); // handles "new jersey" etc.
+    return (
+      `https://www.offmarket.com/listing-category/residential/` +
+      `?state=${abbr}&lp_s_loc=${encodedName}`
+    );
+  });
+}
+
+const SEARCH_URLS = buildSearchUrls();
+
 const DETAIL_DELAY_MS = 4_000;
 const MAX_RETRIES     = 3;
+const THIRTY_DAYS_MS  = 30 * 24 * 60 * 60 * 1000;
 
 // ── 30-day date filter ─────────────────────────────────────────────────────
+//
+// Fail-open: if we can't determine a date we don't discard potentially valid
+// listings.  The real filtering is the state-level URL param above.
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-
-/**
- * Returns true when the listing should be kept.
- * Fail-open: if the date is missing or unparseable the listing is included.
- */
-function isWithinThirtyDays(dateStr: string | number | undefined): boolean {
-  if (dateStr === undefined || dateStr === "") return true;
-  const parsed = new Date(dateStr);
+function isWithinThirtyDays(dateVal: string | number | undefined): boolean {
+  if (dateVal === undefined || dateVal === "") return true;
+  const parsed = typeof dateVal === "number" ? new Date(dateVal) : new Date(dateVal);
   if (isNaN(parsed.getTime())) return true;
   return Date.now() - parsed.getTime() <= THIRTY_DAYS_MS;
 }
 
 // ── Location filter ────────────────────────────────────────────────────────
 
-/**
- * Returns true when the listing matches the configured state (and optionally
- * city) filters.
- *
- * Matching strategy (fail-open when nothing can be determined):
- *   1. Check parsed `state` field from parser
- *   2. Fall back to state extracted from the listing URL slug
- *   3. If still unknown → INCLUDE (we never silently drop uncertain data)
- *
- * City filter (OFFMARKET_CITIES) is purely additive — only applied when
- * FILTER_CITIES is non-empty. A listing passes if ANY city keyword is a
- * case-insensitive substring of the address, location, city, or URL.
- */
 function passesLocationFilter(listing: Partial<RawListing> & { url: string }): boolean {
-  // Determine state from parsed field or URL slug
   const state =
     (listing as any).state ??
     extractStateFromUrl(listing.url);
 
   if (!state) {
-    // Can't determine state — include and let downstream decide
     logger.debug(`[offmarket] Location unknown (fail-open): ${listing.url}`);
     return true;
   }
 
-  if (!FILTER_STATES.includes(state.toUpperCase())) {
-    return false;
-  }
+  if (!FILTER_STATES.includes(state.toUpperCase())) return false;
 
-  // State matches — now apply city filter if configured
   if (FILTER_CITIES.length === 0) return true;
 
   const haystack = [
@@ -122,12 +134,25 @@ function passesLocationFilter(listing: Partial<RawListing> & { url: string }): b
   return FILTER_CITIES.some((city) => haystack.includes(city));
 }
 
+// ── Per-state scrape session ───────────────────────────────────────────────
+
+interface StateSession {
+  searchUrl:     string;
+  pagInfo:       any;
+  ajaxPage:      Page | null;
+  totalFetched:  number;
+  done:          boolean;
+}
+
 // ── Scraper ────────────────────────────────────────────────────────────────
 
 export class OffmarketScraper extends BaseScraper {
   readonly sourceName = "offmarket";
 
   private cookiesWarmed = false;
+
+  private _sessions: StateSession[] = [];
+  private _sessionsInitialized = false;
 
   constructor(options: ScraperOptions = {}) {
     super(options);
@@ -139,14 +164,21 @@ export class OffmarketScraper extends BaseScraper {
       );
     }
 
-    logger.info(`[offmarket] Search URL:    ${DEFAULT_SEARCH_URL}`);
     logger.info(`[offmarket] State filter:  ${FILTER_STATES.join(", ")}`);
+    logger.info(`[offmarket] Search URLs:   ${SEARCH_URLS.join(" | ")}`);
     if (FILTER_CITIES.length) {
       logger.info(`[offmarket] City filter:   ${FILTER_CITIES.join(", ")}`);
     }
   }
 
-  // ── Cookie + session warm-up ──────────────────────────────────────────────
+  // ── hasMorePages ──────────────────────────────────────────────────────────
+
+  protected hasMorePages(_pageNumber: number, _lastPageResults: RawListing[]): boolean {
+    if (!this._sessionsInitialized) return true;
+    return this._sessions.some((s) => !s.done);
+  }
+
+  // ── Session warm-up ───────────────────────────────────────────────────────
 
   private async warmSession(page: Page): Promise<void> {
     logger.info("[offmarket] Warming session…");
@@ -157,17 +189,13 @@ export class OffmarketScraper extends BaseScraper {
         await page.evaluate(`window.scrollTo(0, ${y})`);
         await sleep(300 + Math.random() * 200);
       }
-
       try {
         await page.goto(
           "https://www.offmarket.com/listing-category/real-estate/",
           { waitUntil: "domcontentloaded", timeout: 30_000 }
         );
         await sleep(3000 + Math.random() * 2000);
-      } catch {
-        // non-fatal
-      }
-
+      } catch {}
       await sleep(8000 + Math.random() * 5000);
       this.cookiesWarmed = true;
       logger.debug("[offmarket] Session warmed");
@@ -176,7 +204,7 @@ export class OffmarketScraper extends BaseScraper {
     }
   }
 
-  // ── Block detection ────────────────────────────────────────────────────────
+  // ── Block detection ───────────────────────────────────────────────────────
 
   private detectBlock(html: string): "wordfence" | "rate_limit" | "none" {
     const lower = html.toLowerCase();
@@ -191,18 +219,15 @@ export class OffmarketScraper extends BaseScraper {
     return "none";
   }
 
-  // ── Fetch search page ──────────────────────────────────────────────────────
+  // ── Fetch search page ─────────────────────────────────────────────────────
 
   private async fetchSearchPage(page: Page, url: string): Promise<string | null> {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-
         try {
           await page.waitForSelector("[data-posturl]", { timeout: 15_000 });
-        } catch {
-          // may be empty or end of results
-        }
+        } catch {}
 
         for (const y of [400, 900, 1400, 900, 400]) {
           await page.evaluate(`window.scrollTo(0, ${y})`);
@@ -210,7 +235,7 @@ export class OffmarketScraper extends BaseScraper {
         }
         await sleep(1500);
 
-        const html = await page.content();
+        const html      = await page.content();
         const blockType = this.detectBlock(html);
 
         if (blockType === "wordfence") {
@@ -239,25 +264,33 @@ export class OffmarketScraper extends BaseScraper {
     return null;
   }
 
-  // ── AJAX Load More ─────────────────────────────────────────────────────────
+  // ── AJAX Load More ────────────────────────────────────────────────────────
   //
-  // KEY FIX: We read listedIds and randNumber directly from the live page DOM
-  // rather than from the HTML snapshot stored in _pagInfo. This ensures we
-  // always have the current values (the page may update them after load).
+  // The server's "Load More" button carries data-page="2" after page 1 loads
+  // (i.e. "next page to fetch is 2").  We store that in pagInfo.loadMorePage.
+  //
+  // Correct page numbering:
+  //   → call 1: loadMorePage + 0   (e.g. 2)
+  //   → call 2: loadMorePage + 1   (e.g. 3)
 
   private async fetchLoadMore(
-    page: Page,
-    ajaxPage: number,
+    session: StateSession,
+    ajaxPageNum: number,
     termId: string
   ): Promise<string | null> {
-    logger.info(`[offmarket] AJAX Load More — ajax page ${ajaxPage}`);
+    if (!session.ajaxPage) {
+      logger.warn("[offmarket] AJAX: no stored page — cannot load more");
+      return null;
+    }
+
+    logger.info(
+      `[offmarket] AJAX Load More — server page ${ajaxPageNum} (${session.searchUrl})`
+    );
 
     try {
-      const result = await page.evaluate(
-        async ({ ajaxUrl, ajaxPage, termId }) => {
-          // Read nonce and listedIds live from the DOM — more reliable than
-          // values captured from the initial HTML snapshot.
-          const btn = document.querySelector(".loadMoreListing") as HTMLElement | null;
+      const result = await session.ajaxPage.evaluate(
+        async ({ ajaxUrl, ajaxPageNum, termId }) => {
+          const btn   = document.querySelector(".loadMoreListing") as HTMLElement | null;
           const nonce = btn?.getAttribute("data-rand-number") ?? "";
 
           const listedInput =
@@ -265,36 +298,33 @@ export class OffmarketScraper extends BaseScraper {
             (document.querySelector("input[name='listed_listing_id']") as HTMLInputElement | null);
           const listedIds = listedInput?.value ?? "";
 
-          if (!nonce) {
-            console.warn("[offmarket] AJAX: no nonce found in DOM");
-          }
+          if (!nonce) console.warn("[offmarket] AJAX: no nonce found in DOM");
 
           const body = new URLSearchParams({
-            action:             "ajax_listing_load_more",
+            action:            "ajax_listing_load_more",
             nonce,
-            listed_listing_id:  listedIds,
-            page:               String(ajaxPage),
-            term_id:            termId,
+            listed_listing_id: listedIds,
+            page:              String(ajaxPageNum),
+            term_id:           termId,
           });
 
           try {
             const res = await fetch(ajaxUrl, {
-              method: "POST",
+              method:  "POST",
               headers: { "Content-Type": "application/x-www-form-urlencoded" },
-              body: body.toString(),
+              body:    body.toString(),
             });
             return res.ok ? await res.text() : null;
           } catch {
             return null;
           }
         },
-        { ajaxUrl: AJAX_URL, ajaxPage, termId }
+        { ajaxUrl: AJAX_URL, ajaxPageNum, termId }
       );
 
       if (!result || result.trim() === "" || result.trim() === "0") {
-        logger.warn(
-          `[offmarket] AJAX Load More returned empty/null for page ${ajaxPage}`
-        );
+        logger.warn(`[offmarket] AJAX Load More returned empty for server page ${ajaxPageNum}`);
+        session.done = true;
         return null;
       }
 
@@ -306,103 +336,166 @@ export class OffmarketScraper extends BaseScraper {
     }
   }
 
-  // ── BaseScraper implementation ─────────────────────────────────────────────
+  // ── Update hasMore after each AJAX load ────────────────────────────────────
+
+  private async refreshHasMore(session: StateSession): Promise<void> {
+    if (!session.ajaxPage) return;
+
+    const btnGone = !(await session.ajaxPage
+      .evaluate(() => !!document.querySelector(".loadMoreListing"))
+      .catch(() => false));
+
+    const allFetched =
+      session.pagInfo?.totalRecords > 0 &&
+      session.totalFetched >= session.pagInfo.totalRecords;
+
+    if (btnGone || allFetched) {
+      logger.info(
+        `[offmarket] Session done — btnGone:${btnGone} allFetched:${allFetched} ` +
+        `(${session.totalFetched}/${session.pagInfo?.totalRecords}) URL:${session.searchUrl}`
+      );
+      session.done = true;
+    }
+  }
+
+  // ── scrapePage ────────────────────────────────────────────────────────────
 
   protected async scrapePage(
     handle: BrowserHandle,
     pageNumber: number
   ): Promise<RawListing[]> {
-    const page = await handle.newPage();
 
-    try {
-      if (!this.cookiesWarmed) {
-        await this.warmSession(page);
+    // ── Initialise sessions on first call ────────────────────────────────
+    if (!this._sessionsInitialized) {
+      this._sessions = SEARCH_URLS.map((url) => ({
+        searchUrl:    url,
+        pagInfo:      null,
+        ajaxPage:     null,
+        totalFetched: 0,
+        done:         false,
+      }));
+      this._sessionsInitialized = true;
+    }
+
+    // Drain completed sessions
+    while (this._sessions.length > 0 && this._sessions[0].done) {
+      const s = this._sessions.shift()!;
+      if (s.ajaxPage) {
+        await s.ajaxPage.close().catch(() => {});
+        s.ajaxPage = null;
+        logger.debug(`[offmarket] Closed page for ${s.searchUrl}`);
       }
+    }
 
-      // ── Page 1: navigate and parse ────────────────────────────────────────
-      if (pageNumber === 1) {
-        logger.info(`[offmarket] Fetching page 1: ${DEFAULT_SEARCH_URL}`);
-        await sleep(3000 + Math.random() * 2000);
+    if (this._sessions.length === 0) {
+      logger.info("[offmarket] All state sessions complete");
+      return [];
+    }
 
-        const html = await this.fetchSearchPage(page, DEFAULT_SEARCH_URL);
-        if (!html) return [];
+    const session = this._sessions[0];
 
-        this.saveDebug(html, "page_1");
-        const items = parseOffmarketSearchPage(html);
-        logger.info(`[offmarket] Page 1: ${items.length} listings parsed`);
+    // ── First page of this session ────────────────────────────────────────
+    if (!session.pagInfo) {
+      const page = await handle.newPage();
+      session.ajaxPage = page;
 
-        const pagInfo = extractPaginationInfo(html);
-        logger.info(
-          `[offmarket] Total available: ${pagInfo.totalRecords} | ` +
-          `Shown: ${items.length} | Has more: ${pagInfo.hasMore}`
-        );
+      if (!this.cookiesWarmed) await this.warmSession(page);
 
-        // Store pagination info and keep the page open for subsequent AJAX calls
-        (this as any)._pagInfo  = pagInfo;
-        (this as any)._ajaxPage = page;  // intentionally kept open
+      logger.info(`[offmarket] Fetching first page: ${session.searchUrl}`);
+      await sleep(3000 + Math.random() * 2000);
 
-        return this.enrichAndFilter(handle, items);
-      }
-
-      // ── Pages 2+: AJAX Load More ──────────────────────────────────────────
-      const pagInfo  = (this as any)._pagInfo;
-      const ajaxPage: Page | null = (this as any)._ajaxPage ?? null;
-
-      if (!pagInfo?.hasMore) {
-        logger.info("[offmarket] No more pages (Load More exhausted)");
+      const stateTag = this.stateTagFromUrl(session.searchUrl);
+      const html = await this.fetchSearchPage(page, session.searchUrl);
+      if (!html) {
+        session.done = true;
         return [];
       }
 
-      // ajaxPage offset: page 2 → loadMorePage+1, page 3 → loadMorePage+2, …
-      const ajaxPageNum = pagInfo.loadMorePage + (pageNumber - 1);
-      const termId      = "53"; // Residential — confirmed from HTML value="53"
+      this.saveDebug(html, `page_1_${stateTag}`);
 
-      const ajaxHtml = await this.fetchLoadMore(
-        ajaxPage ?? page,
-        ajaxPageNum,
-        termId
+      const items   = parseOffmarketSearchPage(html);
+      const pagInfo = extractPaginationInfo(html);
+
+      logger.info(
+        `[offmarket] ${stateTag} page 1: ${items.length} listings | ` +
+        `Total: ${pagInfo.totalRecords} | hasMore: ${pagInfo.hasMore} | ` +
+        `loadMorePage: ${pagInfo.loadMorePage}`
       );
 
-      if (!ajaxHtml) return [];
+      session.pagInfo      = pagInfo;
+      session.totalFetched = items.length;
 
-      this.saveDebug(ajaxHtml, `ajax_page_${pageNumber}`);
+      // Initialise AJAX call counter
+      session.pagInfo._ajaxCallCount = 0;
 
-      // AJAX response is raw HTML fragments — wrap for cheerio
-      const wrapped = `<html><body><div id="content-grids">${ajaxHtml}</div></body></html>`;
-      const items   = parseOffmarketSearchPage(wrapped);
-      logger.info(`[offmarket] AJAX page ${pageNumber}: ${items.length} listings`);
+      if (!pagInfo.hasMore) session.done = true;
 
-      // Update hasMore by checking whether the Load More button is still in
-      // the DOM of the page we're reusing for AJAX calls
-      if (ajaxPage) {
-        const stillHasMore = await ajaxPage
-          .evaluate(() => !!document.querySelector(".loadMoreListing"))
-          .catch(() => false);
-        if (!stillHasMore) {
-          (this as any)._pagInfo = { ...pagInfo, hasMore: false };
-          logger.info("[offmarket] Load More button gone — no further pages");
-        }
-      }
-
-      return this.enrichAndFilter(handle, items);
-    } finally {
-      // Keep page 1 open for AJAX reuse; close all other pages
-      if (pageNumber > 1) {
-        await page.close().catch(() => {});
-      }
+      return this.enrichAndFilter(items, session);
     }
+
+    // ── Subsequent AJAX pages for this session ────────────────────────────
+    if (session.done) return [];
+
+    // Correct AJAX page numbering:
+    //   loadMorePage = next page server wants (e.g. 2 after initial page loads)
+    //   _ajaxCallCount starts at 0
+    //   → call 1: loadMorePage + 0 = 2  ✓
+    //   → call 2: loadMorePage + 1 = 3  ✓
+    const ajaxCallCount = session.pagInfo._ajaxCallCount as number;
+    const ajaxPageNum   = session.pagInfo.loadMorePage + ajaxCallCount;
+    session.pagInfo._ajaxCallCount = ajaxCallCount + 1;
+
+    const termId   = this.termIdFromUrl(session.searchUrl);
+    const stateTag = this.stateTagFromUrl(session.searchUrl);
+
+    logger.info(
+      `[offmarket] ${stateTag} requesting AJAX page ${ajaxPageNum} ` +
+      `(call #${ajaxCallCount + 1}, loadMorePage=${session.pagInfo.loadMorePage})`
+    );
+
+    const ajaxHtml = await this.fetchLoadMore(session, ajaxPageNum, termId);
+
+    if (!ajaxHtml) {
+      session.done = true;
+      return [];
+    }
+
+    this.saveDebug(ajaxHtml, `ajax_${stateTag}_page_${ajaxPageNum}`);
+
+    const wrapped = `<html><body><div id="content-grids">${ajaxHtml}</div></body></html>`;
+    const items   = parseOffmarketSearchPage(wrapped);
+
+    logger.info(
+      `[offmarket] ${stateTag} AJAX server-page ${ajaxPageNum}: ${items.length} listings`
+    );
+
+    session.totalFetched += items.length;
+    await this.refreshHasMore(session);
+
+    return this.enrichAndFilter(items, session);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Extract a short tag for log/debug labels from the search URL */
+  private stateTagFromUrl(url: string): string {
+    const m = url.match(/[?&]state=([A-Z]{2})/i);
+    return m ? m[1].toUpperCase() : "ALL";
+  }
+
+  /**
+   * Derive the term_id (WordPress category ID) from the search URL.
+   * offmarket.com uses term_id=53 for Residential.
+   */
+  private termIdFromUrl(_url: string): string {
+    return "53"; // Residential
   }
 
   // ── Enrich + filter ────────────────────────────────────────────────────────
-  //
-  // 1. Visit each detail page to get full address, state, city, and date.
-  // 2. Merge detail data over card data (detail is more reliable).
-  // 3. Apply 30-day date filter (fail-open when date unknown).
-  // 4. Apply state/city location filter (fail-open when state unknown).
 
   private async enrichAndFilter(
-    handle: BrowserHandle,
-    rawItems: Omit<RawListing, "source">[]
+    rawItems: Omit<RawListing, "source">[],
+    session: StateSession
   ): Promise<RawListing[]> {
     const enriched: RawListing[] = [];
 
@@ -411,18 +504,21 @@ export class OffmarketScraper extends BaseScraper {
 
       try {
         await sleep(DETAIL_DELAY_MS + Math.random() * 2000);
-        const detailPage = await handle.newPage();
+
+        if (!session.ajaxPage) throw new Error("no ajax page");
+
+        const detailPage = await session.ajaxPage.context().newPage();
 
         try {
           await detailPage.goto(item.url, {
             waitUntil: "domcontentloaded",
-            timeout: 45_000,
+            timeout:   45_000,
           });
           await sleep(1500);
           const detailHtml = await detailPage.content();
 
           if (this.detectBlock(detailHtml) === "none") {
-            detail = parseOffmarketDetailPage(detailHtml);
+            detail = parseOffmarketDetailPage(detailHtml, item.url);
             logger.debug(`[offmarket] Enriched: ${item.url}`);
           }
         } finally {
@@ -432,36 +528,33 @@ export class OffmarketScraper extends BaseScraper {
         logger.debug(`[offmarket] Detail failed for ${item.url}: ${err}`);
       }
 
-      // Merge — detail page wins, card is the fallback
       const merged: RawListing = {
         source: this.sourceName,
         ...item,
         ...detail,
-        // For these fields specifically, prefer detail page but keep card value
-        // when detail page came back empty
         listedDate: detail.listedDate ?? (item as any).listedDate,
-        state:      detail.state      ?? (item as any).state ?? extractStateFromUrl(item.url),
-        city:       detail.city       ?? (item as any).city,
+        state: detail.state ?? (item as any).state ?? extractStateFromUrl(item.url),
+        city:  detail.city  ?? (item as any).city,
       };
 
-      // ── 30-day date filter ───────────────────────────────────────────────
-      if (!isWithinThirtyDays(merged.listedDate)) {
+      // ── Location filter (cheapest check — runs first) ─────────────────
+      if (!passesLocationFilter(merged)) {
         logger.debug(
-          `[offmarket] ✗ Date filtered (${merged.listedDate}): ${item.url}`
+          `[offmarket] ✗ Location (state:${(merged as any).state}): ${item.url}`
         );
         continue;
       }
 
-      // ── Location filter ──────────────────────────────────────────────────
-      if (!passesLocationFilter(merged)) {
+      // ── 30-day date filter ────────────────────────────────────────────
+      if (!isWithinThirtyDays(merged.listedDate)) {
         logger.debug(
-          `[offmarket] ✗ Location filtered (state:${(merged as any).state}): ${item.url}`
+          `[offmarket] ✗ Date too old (${merged.listedDate}): ${item.url}`
         );
         continue;
       }
 
       logger.debug(
-        `[offmarket] ✓ Kept (state:${(merged as any).state} city:${(merged as any).city}): ${item.url}`
+        `[offmarket] ✓ Kept (state:${(merged as any).state} city:${(merged as any).city} date:${merged.listedDate}): ${item.url}`
       );
       enriched.push(merged);
     }
@@ -473,7 +566,7 @@ export class OffmarketScraper extends BaseScraper {
     return enriched;
   }
 
-  // ── Debug ──────────────────────────────────────────────────────────────────
+  // ── Debug ─────────────────────────────────────────────────────────────────
 
   private saveDebug(html: string, label: string): void {
     try {
@@ -485,8 +578,6 @@ export class OffmarketScraper extends BaseScraper {
         "utf-8"
       );
       logger.debug(`[offmarket] Debug → logs/offmarket_${label}.html`);
-    } catch {
-      // non-critical
-    }
+    } catch {}
   }
 }

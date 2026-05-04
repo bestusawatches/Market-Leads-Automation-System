@@ -7,6 +7,8 @@
     "build": "tsc",
     "dev": "ts-node index.ts",
     "start": "node dist/index.js",
+    "server": "ts-node src/server.ts",
+    "dev:server": "nodemon --exec ts-node src/server.ts",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
@@ -34,6 +36,7 @@
     "axios": "^1.6.8",
     "cheerio": "^1.2.0",
     "dotenv": "^16.6.1",
+    "express": "^4.22.1",
     "fetch-blob": "^4.0.0",
     "p-limit": "^5.0.0",
     "p-retry": "^6.2.0",
@@ -44,6 +47,7 @@
     "yargs": "^17.7.2"
   },
   "devDependencies": {
+    "@types/express": "^4.17.25",
     "@types/node": "^20.12.7",
     "@types/yargs": "^17.0.32",
     "prisma": "^5.13.0",

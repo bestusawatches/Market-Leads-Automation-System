@@ -1,8 +1,7 @@
 // src/db/repository.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // ALL database operations live here.
-// Scrapers never touch Prisma directly — they call functions from this file.
-// This means you can swap PostgreSQL for anything else by editing only this file.
+// Scrapers never touch Prisma directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Listing, Prisma } from "@prisma/client";
@@ -13,54 +12,61 @@ import { logger } from "../utils/logger";
 // ── Write ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upsert a single listing.
- * If the URL already exists, all fields are updated and `lastSeenAt` is refreshed.
- * New listings are inserted with `createdAt = now`.
+ * Upsert a single listing to the general Listing table.
+ * Raw data only — no estimates or property linking.
  */
 export async function upsertListing(
   payload: ListingUpsertPayload,
 ): Promise<Listing> {
-  const data: Prisma.ListingCreateInput = {
+  const listingData: Prisma.ListingCreateInput = {
     url: payload.url,
     source: payload.source,
     title: payload.title,
     price: payload.price,
-    address: payload.address,
+    rawAddress: payload.address,
     location: payload.location,
     propertyType: payload.propertyType,
     bedrooms: payload.bedrooms,
     bathrooms: payload.bathrooms,
     squareFeet: payload.squareFeet,
     description: payload.description,
-    postedDate: payload.postedDate,
-    zestimate: payload.zestimate,
-    dealScore: payload.dealScore,
-    equityEstimate: payload.equityEstimate,
+    ownerName: payload.ownerName,
+    ownerPhone: payload.ownerPhone,
+    postedDate: payload.postedDate ?? payload.listedAt,
     lastSeenAt: new Date(),
   };
 
   return prisma.listing.upsert({
     where: { url: payload.url },
-    create: data,
+    create: listingData,
     update: {
-      ...data,
-      // Never overwrite enrichment data if already populated
-      zestimate: payload.zestimate ?? undefined,
-      realtorEstimate: payload.realtorEstimate ?? undefined,
-      redfinEstimate: payload.redfinEstimate ?? undefined,
-      propwireEstimate: payload.propwireEstimate ?? undefined,
+      title: payload.title,
+      price: payload.price,
+      rawAddress: payload.address,
+      location: payload.location,
+      propertyType: payload.propertyType,
+      bedrooms: payload.bedrooms,
+      bathrooms: payload.bathrooms,
+      squareFeet: payload.squareFeet,
+      description: payload.description,
+      ownerName: payload.ownerName,
+      ownerPhone: payload.ownerPhone,
+      postedDate: payload.postedDate ?? payload.listedAt,
+      lastSeenAt: new Date(),
     },
   });
 }
 
 /**
- * Upsert many listings in a single transaction.
- * Returns counts of created vs updated records.
+ * Upsert many listings (batch version)
+ * Uses transaction for better performance.
  */
 export async function upsertMany(
   payloads: ListingUpsertPayload[],
 ): Promise<{ created: number; updated: number }> {
-  await prisma.$transaction(
+  if (payloads.length === 0) return { created: 0, updated: 0 };
+
+  const results = await prisma.$transaction(
     payloads.map((p) =>
       prisma.listing.upsert({
         where: { url: p.url },
@@ -69,31 +75,71 @@ export async function upsertMany(
           source: p.source,
           title: p.title,
           price: p.price,
+          rawAddress: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms ?? (p as any).beds,
+          bathrooms: p.bathrooms ?? (p as any).baths,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          ownerName: p.ownerName,
+          ownerPhone: p.ownerPhone,
+          postedDate: p.postedDate ?? (p as any).listedAt,
+          lastSeenAt: new Date(),
+          // Property linking deferred to enrichment phase
+        },
+        update: {
+          title: p.title,
+          price: p.price,
+          rawAddress: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms ?? (p as any).beds,
+          bathrooms: p.bathrooms ?? (p as any).baths,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          ownerName: p.ownerName,
+          ownerPhone: p.ownerPhone,
+          postedDate: p.postedDate ?? (p as any).listedAt,
+          lastSeenAt: new Date(),
+        },
+      })
+    )
+  );
+
+  logger.info(`[db] Successfully upserted ${payloads.length} listings`);
+  return { created: 0, updated: 0 }; // Prisma upsert doesn't return counts easily
+}
+
+// ── Zillow Listings ───────────────────────────────────────────────────────────
+
+export async function upsertZillowListings(
+  payloads: Array<ListingUpsertPayload & { zestimate?: number }>,
+): Promise<void> {
+  if (payloads.length === 0) return;
+
+  await prisma.$transaction(
+    payloads.map((p) =>
+      (prisma.zillowListing as any).upsert({
+        where: { url: p.url },
+        create: {
+          url: p.url,
+          title: p.title,
+          price: p.price,
           address: p.address,
           location: p.location,
           propertyType: p.propertyType,
-          postedDate: p.postedDate,
           bedrooms: p.bedrooms,
           bathrooms: p.bathrooms,
           squareFeet: p.squareFeet,
           description: p.description,
-          // §3.2 — owner contact
-          ownerName: p.ownerName,
-          ownerPhone: p.ownerPhone,
-          // §3.3 — enrichment
+          postedDate: p.postedDate,
           zestimate: p.zestimate,
-          realtorEstimate: p.realtorEstimate,
-          redfinEstimate: p.redfinEstimate,
-          propwireEstimate: p.propwireEstimate,
-          // §3.5 — underwriting
-          dealScore: p.dealScore,
-          equityEstimate: p.equityEstimate,
           lastSeenAt: new Date(),
         },
         update: {
-          // Always refresh mutable fields
-          price: p.price,
           title: p.title,
+          price: p.price,
           address: p.address,
           location: p.location,
           propertyType: p.propertyType,
@@ -101,26 +147,156 @@ export async function upsertMany(
           bathrooms: p.bathrooms,
           squareFeet: p.squareFeet,
           description: p.description,
-          dealScore: p.dealScore,
-          equityEstimate: p.equityEstimate,
+          postedDate: p.postedDate,
+          zestimate: p.zestimate,
           lastSeenAt: new Date(),
-          // Owner contact: update only if we found something new
-          ...(p.ownerName ? { ownerName: p.ownerName } : {}),
-          ...(p.ownerPhone ? { ownerPhone: p.ownerPhone } : {}),
-          // Enrichment: never overwrite existing estimates with null
-          ...(p.zestimate ? { zestimate: p.zestimate } : {}),
-          ...(p.realtorEstimate ? { realtorEstimate: p.realtorEstimate } : {}),
-          ...(p.redfinEstimate ? { redfinEstimate: p.redfinEstimate } : {}),
-          ...(p.propwireEstimate
-            ? { propwireEstimate: p.propwireEstimate }
-            : {}),
         },
-      }),
-    ),
+      })
+    )
   );
 
-  logger.info(`[db] Upserted ${payloads.length} listings`);
-  return { created: 0, updated: 0 }; // Prisma doesn't expose create/update counts in upsert
+  logger.info(`[db] Upserted ${payloads.length} Zillow listings`);
+}
+
+// ── Redfin Listings ───────────────────────────────────────────────────────────
+
+export async function upsertRedfinListings(
+  payloads: Array<ListingUpsertPayload & { estimate?: number }>,
+): Promise<void> {
+  if (payloads.length === 0) return;
+
+  await prisma.$transaction(
+    payloads.map((p) =>
+      (prisma.redfinListing as any).upsert({
+        where: { url: p.url },
+        create: {
+          url: p.url,
+          title: p.title,
+          price: p.price,
+          address: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms,
+          bathrooms: p.bathrooms,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          postedDate: p.postedDate,
+          estimate: p.estimate,
+          lastSeenAt: new Date(),
+        },
+        update: {
+          title: p.title,
+          price: p.price,
+          address: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms,
+          bathrooms: p.bathrooms,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          postedDate: p.postedDate,
+          estimate: p.estimate,
+          lastSeenAt: new Date(),
+        },
+      })
+    )
+  );
+
+  logger.info(`[db] Upserted ${payloads.length} Redfin listings`);
+}
+
+// ── Realtor Listings ──────────────────────────────────────────────────────────
+
+export async function upsertRealtorListings(
+  payloads: Array<ListingUpsertPayload & { estimate?: number }>,
+): Promise<void> {
+  if (payloads.length === 0) return;
+
+  await prisma.$transaction(
+    payloads.map((p) =>
+      (prisma.realtorListing as any).upsert({
+        where: { url: p.url },
+        create: {
+          url: p.url,
+          title: p.title,
+          price: p.price,
+          address: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms,
+          bathrooms: p.bathrooms,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          postedDate: p.postedDate,
+          estimate: p.estimate,
+          lastSeenAt: new Date(),
+        },
+        update: {
+          title: p.title,
+          price: p.price,
+          address: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms,
+          bathrooms: p.bathrooms,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          postedDate: p.postedDate,
+          estimate: p.estimate,
+          lastSeenAt: new Date(),
+        },
+      })
+    )
+  );
+
+  logger.info(`[db] Upserted ${payloads.length} Realtor listings`);
+}
+
+// ── Propwire Listings ─────────────────────────────────────────────────────────
+
+export async function upsertPropwireListings(
+  payloads: Array<ListingUpsertPayload & { estimate?: number }>,
+): Promise<void> {
+  if (payloads.length === 0) return;
+
+  await prisma.$transaction(
+    payloads.map((p) =>
+      (prisma.propwireListing as any).upsert({
+        where: { url: p.url },
+        create: {
+          url: p.url,
+          title: p.title,
+          price: p.price,
+          address: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms,
+          bathrooms: p.bathrooms,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          postedDate: p.postedDate,
+          estimate: p.estimate,
+          lastSeenAt: new Date(),
+        },
+        update: {
+          title: p.title,
+          price: p.price,
+          address: p.address,
+          location: p.location,
+          propertyType: p.propertyType,
+          bedrooms: p.bedrooms,
+          bathrooms: p.bathrooms,
+          squareFeet: p.squareFeet,
+          description: p.description,
+          postedDate: p.postedDate,
+          estimate: p.estimate,
+          lastSeenAt: new Date(),
+        },
+      })
+    )
+  );
+
+  logger.info(`[db] Upserted ${payloads.length} Propwire listings`);
 }
 
 // ── Read ──────────────────────────────────────────────────────────────────────
@@ -134,7 +310,6 @@ export interface ListingFilters {
   propertyType?: string;
 }
 
-/** Fetch listings with optional filters — used by dashboard/export */
 export async function getListings(
   filters: ListingFilters = {},
   limit = 500,
@@ -146,6 +321,7 @@ export async function getListings(
     where.location = { contains: filters.location, mode: "insensitive" };
   if (filters.dealScore) where.dealScore = filters.dealScore;
   if (filters.propertyType) where.propertyType = filters.propertyType;
+
   if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
     where.price = {};
     if (filters.minPrice !== undefined) where.price.gte = filters.minPrice;
@@ -154,27 +330,192 @@ export async function getListings(
 
   return prisma.listing.findMany({
     where,
+    include: {
+      property: true,
+      // estimates: true,   // uncomment if you want estimates included
+    },
     orderBy: { createdAt: "desc" },
     take: limit,
   });
 }
 
-/** Check if a URL already exists in the database (fast dedup check) */
 export async function urlExists(url: string): Promise<boolean> {
   const count = await prisma.listing.count({ where: { url } });
   return count > 0;
 }
 
-/** Return all URLs already in DB for a given source (bulk dedup) */
 export async function getExistingUrls(source: string): Promise<Set<string>> {
   const rows = await prisma.listing.findMany({
-    where: { source: { contains: source } },
+    where: { source },
     select: { url: true },
   });
   return new Set(rows.map((r) => r.url));
 }
 
-// ── Underwriting update ───────────────────────────────────────────────────────
+/**
+ * Get all properties with related listings and estimates
+ * @param limit - maximum number of properties to return
+ */
+export async function getAllPropertiesWithListings(limit = 1000) {
+  return prisma.property.findMany({
+    include: {
+      listings: {
+        select: {
+          id: true,
+          url: true,
+          source: true,
+          title: true,
+          price: true,
+          rawAddress: true,
+          location: true,
+          propertyType: true,
+          bedrooms: true,
+          bathrooms: true,
+          squareFeet: true,
+          description: true,
+          dealScore: true,
+          equityEstimate: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+      estimates: {
+        select: {
+          id: true,
+          source: true,
+          value: true,
+          fetchedAt: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+/**
+ * Get all listings with optional related property data
+ * @param limit - maximum number of listings to return
+ */
+export async function getAllListings(limit = 1000) {
+  return prisma.listing.findMany({
+    include: {
+      property: {
+        select: {
+          id: true,
+          normalizedAddress: true,
+          address: true,
+          city: true,
+          state: true,
+          zip: true,
+          latitude: true,
+          longitude: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+// ── Filters (Singleton Pattern) ───────────────────────────────────────────
+// Only one filter record exists in the database
+
+export interface SavedFilterInput {
+  name: string;
+  description?: string;
+  source: string;
+  minPrice?: number;
+  maxPrice?: number;
+  propertyTypes?: string[];
+  locations?: string[];
+  keywords?: string[];
+  excludeKeywords?: string[];
+  postedAfter?: Date;
+  postedBefore?: Date;
+  minBedrooms?: number;
+  maxBedrooms?: number;
+  minBathrooms?: number;
+  maxBathrooms?: number;
+  minSquareFeet?: number;
+  maxSquareFeet?: number;
+  minEquity?: number;
+  minArv?: number;
+  isActive?: boolean;
+}
+
+/**
+ * Upsert single filter record (create if not exists, update if exists)
+ * Since only one filter record should exist, this handles both create and update
+ */
+export async function upsertFilter(data: SavedFilterInput) {
+  // Get existing filter (should be only one)
+  const existingFilter = await prisma.savedFilter.findFirst();
+
+  if (existingFilter) {
+    // Update existing filter
+    return prisma.savedFilter.update({
+      where: { id: existingFilter.id },
+      data: {
+        name: data.name,
+        description: data.description,
+        source: data.source,
+        minPrice: data.minPrice,
+        maxPrice: data.maxPrice,
+        propertyTypes: data.propertyTypes || [],
+        locations: data.locations || [],
+        keywords: data.keywords || [],
+        excludeKeywords: data.excludeKeywords || [],
+        postedAfter: data.postedAfter,
+        postedBefore: data.postedBefore,
+        minBedrooms: data.minBedrooms,
+        maxBedrooms: data.maxBedrooms,
+        minBathrooms: data.minBathrooms,
+        maxBathrooms: data.maxBathrooms,
+        minSquareFeet: data.minSquareFeet,
+        maxSquareFeet: data.maxSquareFeet,
+        minEquity: data.minEquity,
+        minArv: data.minArv,
+        isActive: data.isActive !== undefined ? data.isActive : true,
+      },
+    });
+  } else {
+    // Create new filter
+    return prisma.savedFilter.create({
+      data: {
+        name: data.name,
+        description: data.description,
+        source: data.source,
+        minPrice: data.minPrice,
+        maxPrice: data.maxPrice,
+        propertyTypes: data.propertyTypes || [],
+        locations: data.locations || [],
+        keywords: data.keywords || [],
+        excludeKeywords: data.excludeKeywords || [],
+        postedAfter: data.postedAfter,
+        postedBefore: data.postedBefore,
+        minBedrooms: data.minBedrooms,
+        maxBedrooms: data.maxBedrooms,
+        minBathrooms: data.minBathrooms,
+        maxBathrooms: data.maxBathrooms,
+        minSquareFeet: data.minSquareFeet,
+        maxSquareFeet: data.maxSquareFeet,
+        minEquity: data.minEquity,
+        minArv: data.minArv,
+        isActive: data.isActive !== undefined ? data.isActive : true,
+      },
+    });
+  }
+}
+
+/**
+ * Get the single filter record (or null if none exists)
+ */
+export async function getFilter() {
+  return prisma.savedFilter.findFirst();
+}
+
+// ── Underwriting ─────────────────────────────────────────────────────────────
 
 export async function updateDealScore(
   url: string,
@@ -204,7 +545,7 @@ export async function getSummaryStats(): Promise<{
     total,
     bySource: Object.fromEntries(bySrc.map((r) => [r.source, r._count])),
     byDealScore: Object.fromEntries(
-      byScore.map((r) => [r.dealScore ?? "unscored", r._count]),
+      byScore.map((r) => [r.dealScore ?? "unscored", r._count])
     ),
   };
 }

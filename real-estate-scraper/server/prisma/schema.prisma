@@ -12,43 +12,68 @@ datasource db {
   // shadowDatabaseUrl = env("DEV_SHADOW_DATABASE_URL")
 }
 
+model Property {
+  id                  String   @id @default(cuid())
+
+  // 🔥 Canonical identity
+  normalizedAddress   String   @unique
+  address             String?
+
+  city                String?
+  state               String?
+  zip                 String?
+
+  latitude            Float?
+  longitude           Float?
+
+  // Relations
+  listings            Listing[]
+  estimates           Estimate[]
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([city, state])
+}
+
 model Listing {
   id          String   @id @default(cuid())
 
-  // ── Identity (used for deduplication) ───────────────────────────────────
+  // ── Identity ─────────────────────────────────────────────
   url         String   @unique
-  source      String   // "craigslist_milwaukee" | "zillow" | "realtor" | etc.
+  source      String
 
-  // ── §3.2 — Core data extraction fields ───────────────────────────────────
+  // 🔥 Optional: link to property (populated during enrichment phase)
+  propertyId  String?
+  property    Property? @relation(fields: [propertyId], references: [id])
+
+  // ── Raw scraped data ─────────────────────────────────────
   title        String?
   price        Int?
-  address      String?
+  rawAddress   String?   // renamed (important)
   location     String?
-  propertyType String?   // "single_family" | "multi_family" | "duplex" | etc.
-  postedDate   DateTime? // listing date
+  propertyType String?
+  postedDate   DateTime?
   description  String?
 
-  // ── §3.2 — Property details ───────────────────────────────────────────────
-  bedrooms    Int?
-  bathrooms   Float?
-  squareFeet  Int?
+  bedrooms     Int?
+  bathrooms    Float?
+  squareFeet   Int?
 
-  // ── §3.2 — Owner contact (extracted from post body where available) ───────
-  ownerName   String?
-  ownerPhone  String?
+  ownerName    String?
+  ownerPhone   String?
 
-  // ── §3.3 — Data enrichment (filled by enrichment pipeline) ───────────────
-  zestimate        Int?  // Zillow estimate
-  realtorEstimate  Int?  // Realtor.com estimate
-  redfinEstimate   Int?  // Redfin estimate
-  propwireEstimate Int?  // Propwire estimate
+  // ❌ REMOVE THESE (they move to Estimate table)
+  // zestimate
+  // realtorEstimate
+  // redfinEstimate
+  // propwireEstimate
 
-  // ── §3.5 — Underwriting ───────────────────────────────────────────────────
-  // "good_deal" | "average_deal" | "low_potential" | null (not yet scored)
+  // ── Underwriting ─────────────────────────────────────────
   dealScore      String?
-  equityEstimate Int?    // ARV - price (calculated from best available estimate)
+  equityEstimate Int?
 
-  // ── Meta ──────────────────────────────────────────────────────────────────
+  // ── Meta ────────────────────────────────────────────────
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   lastSeenAt DateTime @default(now())
@@ -58,5 +83,181 @@ model Listing {
   @@index([location])
   @@index([dealScore])
   @@index([propertyType])
-  @@index([ownerPhone])  // quick lookup for CRM deduplication
+  @@index([ownerPhone])
+  @@index([propertyId])
+}
+
+model Estimate {
+  id          String   @id @default(cuid())
+
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id])
+
+  source      String   // "zillow" | "redfin" | "realtor" | "propwire"
+  value       Int
+
+  fetchedAt   DateTime @default(now())
+
+  @@unique([propertyId, source]) // 🔥 prevents duplicates
+  @@index([source])
+}
+
+model ZillowListing {
+  id          String   @id @default(cuid())
+
+  // ── Identity ─────────────────────────────────────────────
+  url         String   @unique
+
+  // ── Raw scraped data ─────────────────────────────────────
+  title       String?
+  price       Int?
+  address     String?
+  location    String?
+  propertyType String?
+  postedDate  DateTime?
+  description String?
+
+  bedrooms    Int?
+  bathrooms   Float?
+  squareFeet  Int?
+
+  zestimate   Int?
+
+  // ── Meta ────────────────────────────────────────────────
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime @default(now())
+
+  @@index([price])
+  @@index([location])
+}
+
+model RedfinListing {
+  id          String   @id @default(cuid())
+
+  // ── Identity ─────────────────────────────────────────────
+  url         String   @unique
+
+  // ── Raw scraped data ─────────────────────────────────────
+  title       String?
+  price       Int?
+  address     String?
+  location    String?
+  propertyType String?
+  postedDate  DateTime?
+  description String?
+
+  bedrooms    Int?
+  bathrooms   Float?
+  squareFeet  Int?
+
+  estimate    Int?
+
+  // ── Meta ────────────────────────────────────────────────
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime @default(now())
+
+  @@index([price])
+  @@index([location])
+}
+
+model RealtorListing {
+  id          String   @id @default(cuid())
+
+  // ── Identity ─────────────────────────────────────────────
+  url         String   @unique
+
+  // ── Raw scraped data ─────────────────────────────────────
+  title       String?
+  price       Int?
+  address     String?
+  location    String?
+  propertyType String?
+  postedDate  DateTime?
+  description String?
+
+  bedrooms    Int?
+  bathrooms   Float?
+  squareFeet  Int?
+
+  estimate    Int?
+
+  // ── Meta ────────────────────────────────────────────────
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime @default(now())
+
+  @@index([price])
+  @@index([location])
+}
+
+model PropwireListing {
+  id          String   @id @default(cuid())
+
+  // ── Identity ─────────────────────────────────────────────
+  url         String   @unique
+
+  // ── Raw scraped data ─────────────────────────────────────
+  title       String?
+  price       Int?
+  address     String?
+  location    String?
+  propertyType String?
+  postedDate  DateTime?
+  description String?
+
+  bedrooms    Int?
+  bathrooms   Float?
+  squareFeet  Int?
+
+  estimate    Int?
+
+  // ── Meta ────────────────────────────────────────────────
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastSeenAt  DateTime @default(now())
+
+  @@index([price])
+  @@index([location])
+}
+
+model SavedFilter {
+  id           String   @id @default(cuid())
+  name         String   // e.g. "Cleveland Under $150k"
+  description  String?
+  source       String   // scraper source: "craigslist" | "zillow" | "redfin" | "realtor" | etc.
+
+  // ── Filter criteria ───────────────────────────────────────────────────────
+  minPrice     Int?
+  maxPrice     Int?
+  propertyTypes String[]  // array of types: ["single_family", "multi_family", "duplex"]
+  locations    String[]   // array of cities/states: ["Cleveland, OH", "Milwaukee, WI"]
+  keywords     String[]   // search terms to include: ["investment", "rental"]
+  excludeKeywords String[] // terms to exclude: ["lease", "commercial"]
+  
+  // ── Date filtering ────────────────────────────────────────────────────────
+  postedAfter  DateTime?  // minimum listing date
+  postedBefore DateTime?  // maximum listing date
+  
+  // ── Property-specific filters ─────────────────────────────────────────────
+  minBedrooms  Int?
+  maxBedrooms  Int?
+  minBathrooms Float?
+  maxBathrooms Float?
+  minSquareFeet Int?
+  maxSquareFeet Int?
+  
+  // ── Enrichment filters ────────────────────────────────────────────────────
+  // Used to find listings meeting ARV/equity thresholds
+  minEquity    Int?       // minimum equity estimate (ARV - price)
+  minArv       Int?       // minimum home value estimate
+  
+  // ── Meta ──────────────────────────────────────────────────────────────────
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([source])
+  @@index([isActive])
 }

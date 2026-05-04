@@ -17,10 +17,14 @@ import {
 
 const PER_PAGE = 120; // Craigslist shows 120 results per offset
 const MAX_RETRIES = 3;
+const DAYS_TO_LOOK_BACK = 30; // Only include listings from the last 30 days
 
 export class CraigslistScraper extends BaseScraper {
   readonly sourceName: string;
   private readonly baseUrl: string;
+  // FIX: track seen URLs across all pages to detect when Craigslist stops
+  // returning new results (static layout pages repeat indefinitely).
+  private readonly seenUrls = new Set<string>();
 
   constructor(baseUrl: string, options: ScraperOptions = {}) {
     super(options);
@@ -29,6 +33,15 @@ export class CraigslistScraper extends BaseScraper {
     const subdomain =
       new URL(baseUrl).hostname.split(".")[0] ?? "craigslist";
     this.sourceName = `craigslist_${subdomain}`;
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────
+
+  private isWithinLookbackWindow(postedDate: Date | undefined): boolean {
+    if (!postedDate) return true; // Include items without a date (keep as-is)
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - DAYS_TO_LOOK_BACK);
+    return postedDate >= cutoffDate;
   }
 
   // ── Page URL ────────────────────────────────────────────────────────────
@@ -99,9 +112,43 @@ export class CraigslistScraper extends BaseScraper {
 
       if (rawItems.length === 0) return [];
 
+      // FIX: deduplicate against URLs seen on previous pages.
+      // The static layout serves the same set of listings on every page offset
+      // once results are exhausted — deduplication is the only reliable signal.
+      const newItems = rawItems.filter((item) => {
+        if (this.seenUrls.has(item.url)) return false;
+        this.seenUrls.add(item.url);
+        return true;
+      });
+
+      if (newItems.length === 0) {
+        logger.info(
+          `[${this.sourceName}] Page ${pageNumber}: all ${rawItems.length} listings already seen — stopping pagination`
+        );
+        // Return a special sentinel so hasMorePages knows to stop.
+        // We use an empty array; hasMorePages treats that as "done".
+        return [];
+      }
+
+      logger.debug(
+        `[${this.sourceName}] Page ${pageNumber}: ${newItems.length} new listings (${rawItems.length - newItems.length} dupes skipped)`
+      );
+
+      // Filter to listings from the last 30 days
+      const recentItems = newItems.filter((item) =>
+        this.isWithinLookbackWindow(item.postedDate)
+      );
+
+      if (recentItems.length === 0) {
+        logger.info(
+          `[${this.sourceName}] Page ${pageNumber}: no recent listings (all older than ${DAYS_TO_LOOK_BACK} days)`
+        );
+        return [];
+      }
+
       // Fetch detail pages for enrichment (beds/baths/address)
       const enriched: RawListing[] = [];
-      for (const item of rawItems) {
+      for (const item of recentItems) {
         // Skip detail fetch if we'd blow past the listing limit
         if (this.results.length + enriched.length >= this.options.maxListings) {
           break;
@@ -133,11 +180,19 @@ export class CraigslistScraper extends BaseScraper {
     }
   }
 
-  // If the page returned 0 items, we've hit the end of results
+  // Stop pagination if:
+  //   • no results (empty page or all dupes — see scrapePage above)
+  //   • all results are older than 30 days
   protected hasMorePages(
     _pageNumber: number,
     lastPageResults: RawListing[]
   ): boolean {
-    return lastPageResults.length > 0;
+    if (lastPageResults.length === 0) {
+      return false;
+    }
+    const hasRecentItems = lastPageResults.some((item) =>
+      this.isWithinLookbackWindow(item.postedDate)
+    );
+    return hasRecentItems;
   }
 }

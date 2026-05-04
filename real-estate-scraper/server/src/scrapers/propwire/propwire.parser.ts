@@ -1,56 +1,64 @@
 // src/scrapers/propwire/propwire.parser.ts
 //
-// ── Data sources ──────────────────────────────────────────────────────────────
+// ── API shape (confirmed from DevTools network capture) ───────────────────────
 //
-// Propwire is a React SPA. The search page HTML does NOT contain property data
-// for unauthenticated users — results are loaded via authenticated XHR after
-// React mounts. We therefore skip the HTML scraping approach and call
-// Propwire's internal search API directly.
+//   POST https://api.propwire.com/api/property_search
+//   Authorization: Bearer <JWT from PROPWIRE_BEARER_TOKEN>
 //
-// STRATEGY: Call the internal API endpoint the React app uses:
-//
-//   POST https://api.propwire.com/api/v1/search
-//   Headers:
-//     Authorization: Bearer <JWT from PROPWIRE_SESSION_COOKIE env var>
-//     Content-Type: application/json
-//
-//   Body: { filters: <filters object>, page: N, per_page: 25 }
-//
-//   Response shape:
+//   Request body:
 //   {
-//     data: {
-//       properties: PropertyObject[],
-//       total:      number,
-//       per_page:   number,
-//       current_page: number,
-//       last_page:  number,
-//     }
+//     "size": 50,
+//     "result_index": 0,       ← pagination offset (0, 50, 100 …)
+//     "house": true,
+//     "locations": [
+//       { "searchType": "C", "state": "OH", "title": "Columbus, OH",
+//         "stateName": "Ohio", "city": "Columbus" }
+//     ],
+//     "lead_type_filters": ["mls_active"],   ← for_sale maps to this
+//     "estimated_value": { "max": 300000 }
 //   }
 //
-// ALTERNATIVE: The JWT token embedded in the page HTML data-page attribute
-// is a short-lived CSRF/session token (expires ~2h). The longer-lived auth
-// token is in the Authorization Bearer header the app sends via XHR.
+//   Response:
+//   {
+//     "request": { "size": 50, "result_index": 0, ... },
+//     "response": [
+//       {
+//         "id": 41019,
+//         "address": { "address": "3206 Tampa Ave", "city": "Cleveland",
+//                      "state": "OH", "zip": "44109" },
+//         "bedrooms": 3,
+//         "bathrooms": 1,
+//         "building_area_sf": 847,
+//         "estimated_value": 63876,
+//         "estimated_equity": 15030,
+//         "geo_location": { "latitude": "41.432696", "longitude": "-81.704793" },
+//         "last_sold_date": "2007-03-30",
+//         "last_sold_price": 77000,
+//         "lead_type": { "mls_active": false, ... },
+//         "days_on_market": null,
+//         ...
+//       }
+//     ]
+//   }
 //
-// HOW TO GET THE API TOKEN:
+// ── HOW TO GET THE BEARER TOKEN ───────────────────────────────────────────────
+//
 //   1. Log into propwire.com in Chrome
-//   2. Open DevTools → Network tab
-//   3. Perform a search, filter by XHR/Fetch
-//   4. Find a request to api.propwire.com
-//   5. Copy the Authorization header value (starts with "Bearer eyJ...")
-//   6. Set PROPWIRE_API_TOKEN=eyJ... in .env (without the "Bearer " prefix)
-//
-// ── Authentication ────────────────────────────────────────────────────────────
-//
-// Set PROPWIRE_API_TOKEN in .env with the Bearer token value.
-// This token lasts longer than the laravel_session cookie (~24h typically).
+//   2. Open DevTools → Network tab → filter by Fetch/XHR
+//   3. Perform any search on the site
+//   4. Look for a request to api.propwire.com/api/property_search
+//   5. Click it → Headers → Authorization: Bearer eyJ...
+//   6. Copy the value AFTER "Bearer " and set in .env:
+//      PROPWIRE_BEARER_TOKEN=eyJ...
+//   Token lasts ~24-72h. When expired you'll see API 401 — grab a fresh one.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { RawListing, PropertyType } from "../../types/listing";
 import { logger }                   from "../../utils/logger";
 
-export const MAX_DAYS_OLD     = 30;
-export const RESULTS_PER_PAGE = 25; // Propwire default page size
+export const MAX_DAYS_OLD     = 90;   // off-market props have no list date; be generous
+export const RESULTS_PER_PAGE = 50;   // api.propwire.com default page size
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,8 +77,8 @@ export function parsePrice(raw: any): number | undefined {
 function toPropertyType(raw: string | undefined): PropertyType {
   if (!raw) return "single_family";
   const t = raw.toUpperCase();
-  if (t === "SFR" || t.includes("SINGLE"))  return "single_family";
-  if (t === "MFR" || t.includes("MULTI"))   return "multi_family";
+  if (t === "SFR"  || t.includes("SINGLE")) return "single_family";
+  if (t === "MFR"  || t.includes("MULTI"))  return "multi_family";
   if (t === "DUPLEX")                        return "duplex";
   if (t === "CONDO")                         return "condo";
   if (t.includes("TOWN"))                    return "townhouse";
@@ -88,68 +96,67 @@ function daysSince(dateStr: string | undefined | null): number | undefined {
   }
 }
 
-export function buildListingUrl(propertyId: string, address: string, city: string, state: string): string {
+export function buildListingUrl(
+  propertyId: string,
+  address:    string,
+  city:       string,
+  state:      string
+): string {
   const citySlug = city.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   const addrSlug = address.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-  const st       = state.toLowerCase();
-  return `https://propwire.com/property/${st}/${citySlug}/${addrSlug}/${propertyId}`;
+  return `https://propwire.com/property/${state.toLowerCase()}/${citySlug}/${addrSlug}/${propertyId}`;
 }
 
-// ── API response parser ───────────────────────────────────────────────────────
+// ── Lead-type helpers ─────────────────────────────────────────────────────────
 //
-// Parses the JSON response from Propwire's internal search API.
-// Handles multiple possible response envelope shapes.
+// The API returns lead_type as an object with boolean flags:
+//   { "mls_active": true, "preforeclosure": false, ... }
+// We collect the truthy keys as an array for storage/display.
+
+function extractLeadTypes(leadTypeObj: any): string[] {
+  if (!leadTypeObj || typeof leadTypeObj !== "object") return [];
+  if (Array.isArray(leadTypeObj)) return leadTypeObj.filter(Boolean);
+  return Object.entries(leadTypeObj)
+    .filter(([, v]) => v === true)
+    .map(([k]) => k);
+}
+
+// ── Main parser ───────────────────────────────────────────────────────────────
 
 export interface PropwireSearchResult {
-  listings:        RawListing[];
-  allStale:        boolean;
-  totalCount:      number;
-  totalPages:      number;
+  listings:   RawListing[];
+  allStale:   boolean;
+  totalCount: number;
+  hasMore:    boolean;   // true if more pages remain
 }
 
 export function parsePropwireApiResponse(
   json:            any,
-  applyDateFilter = true
+  resultIndex:     number  = 0,
+  applyDateFilter: boolean = false   // most Propwire results lack list dates — keep open
 ): PropwireSearchResult {
-  // Unwrap various envelope shapes
-  const payload =
-    json?.data ??
-    json?.payload ??
-    json;
-
+  // Confirmed response envelope: { request: {...}, response: [...] }
   const raw: any[] =
-    payload?.properties ??
-    payload?.results ??
-    payload?.data ??
-    json?.properties ??
+    json?.response            ??
+    json?.data?.properties    ??
+    json?.data?.results       ??
+    json?.properties          ??
+    (Array.isArray(json?.data) ? json.data : []) ??
     [];
 
-  const totalCount: number =
-    payload?.total ??
-    payload?.totalCount ??
-    payload?.count ??
-    raw.length;
-
-  const perPage: number =
-    payload?.per_page ??
-    payload?.perPage ??
-    RESULTS_PER_PAGE;
-
-  const totalPages: number =
-    payload?.last_page ??
-    payload?.totalPages ??
-    (totalCount > 0 ? Math.ceil(totalCount / perPage) : 1);
+  const requestSize: number = json?.request?.size ?? RESULTS_PER_PAGE;
+  const hasMore             = raw.length >= requestSize;   // if we got a full page, assume more exist
 
   logger.debug(
-    `[propwire-parser] properties=${raw.length} total=${totalCount} pages=${totalPages}`
+    `[propwire-parser] raw=${raw.length} resultIndex=${resultIndex} hasMore=${hasMore}`
   );
 
   if (raw.length === 0) {
     logger.debug(
-      `[propwire-parser] No properties in response. ` +
-      `Top-level keys: ${Object.keys(json ?? {}).join(", ")}`
+      "[propwire-parser] No properties in response. Top-level keys: " +
+      Object.keys(json ?? {}).join(", ")
     );
-    return { listings: [], allStale: true, totalCount: 0, totalPages: 1 };
+    return { listings: [], allStale: false, totalCount: 0, hasMore: false };
   }
 
   logger.debug(
@@ -160,22 +167,35 @@ export function parsePropwireApiResponse(
   let staleCount = 0;
 
   for (const item of raw) {
-    if (!item?.property_id && !item?.id) continue;
+    // id is the primary key in the confirmed response shape
+    if (!item?.id && !item?.property_id) continue;
 
-    const propertyId = String(item.property_id ?? item.id ?? "");
+    const propertyId = String(item.id ?? item.property_id);
 
-    // ── Address ───────────────────────────────────────────────────────────
-    const streetLine = (item.address ?? item.street_address ?? "").trim();
-    const city       = (item.city ?? "").trim();
-    const state      = (item.state ?? "").trim();
-    const zip        = (item.zip ?? item.postal_code ?? "").trim();
+    // ── Address ── confirmed shape: item.address = { address, city, state, zip }
+    const addrObj    = item.address ?? {};
+    const streetLine = (
+      typeof addrObj === "string" ? addrObj :
+      addrObj.address ?? addrObj.street_address ?? item.street_address ?? ""
+    ).trim();
+    const city       = (addrObj.city   ?? item.city  ?? "").trim();
+    const state      = (addrObj.state  ?? item.state ?? "").trim();
+    const zip        = (addrObj.zip    ?? item.zip   ?? addrObj.postal_code ?? "").trim();
     const fullAddress = [streetLine, city, state, zip].filter(Boolean).join(", ");
 
-    if (!fullAddress) continue;
+    if (!streetLine || !city) {
+      logger.debug(`[propwire-parser] Skip ${propertyId}: no address`);
+      continue;
+    }
 
-    // ── Staleness filter ──────────────────────────────────────────────────
-    const listDate   = item.list_date ?? item.listing_date ?? item.last_sale_date;
-    const daysOld    = item.days_on_market ?? daysSince(listDate);
+    // ── Staleness ─────────────────────────────────────────────────────────
+    // Most off-market Propwire results have null days_on_market and no list_date.
+    // We use last_sold_date only as a rough proxy; don't filter on it.
+    const listDate  = item.list_date ?? item.listing_date ?? null;
+    const daysOld   =
+      item.days_on_market != null ? Number(item.days_on_market) :
+      listDate                    ? daysSince(listDate)         :
+      undefined;
 
     if (applyDateFilter && typeof daysOld === "number" && daysOld > MAX_DAYS_OLD) {
       staleCount++;
@@ -183,226 +203,143 @@ export function parsePropwireApiResponse(
     }
 
     // ── Price ─────────────────────────────────────────────────────────────
-    const price = parsePrice(item.list_price ?? item.listing_price);
+    // For MLS-active listings, list_price is present.
+    // For off-market, we fall back to estimated_value.
+    const price          = parsePrice(item.list_price ?? item.listing_price);
+    const estimatedValue = parsePrice(item.estimated_value ?? item.estimatedValue ?? item.avm_value);
+    const estimatedEquity = parsePrice(item.estimated_equity ?? item.estimatedEquity);
 
-    // ── Propwire AVM ──────────────────────────────────────────────────────
-    const estimatedValue = parsePrice(
-      item.estimated_value ?? item.estimatedValue ?? item.avm_value
-    );
-    const estimatedEquity = parsePrice(
-      item.estimated_equity ?? item.estimatedEquity
-    );
+    // ── Geo ───────────────────────────────────────────────────────────────
+    // Confirmed shape: geo_location: { latitude: "41.43", longitude: "-81.70" }
+    const geo = item.geo_location ?? {};
+    const lat: number | undefined =
+      typeof geo.latitude  === "number" ? geo.latitude  :
+      typeof geo.latitude  === "string" ? parseFloat(geo.latitude)  || undefined :
+      typeof item.latitude === "number" ? item.latitude : undefined;
+    const lng: number | undefined =
+      typeof geo.longitude  === "number" ? geo.longitude  :
+      typeof geo.longitude  === "string" ? parseFloat(geo.longitude) || undefined :
+      typeof item.longitude === "number" ? item.longitude : undefined;
 
-    // ── Details ───────────────────────────────────────────────────────────
-    const beds     = typeof item.bedrooms  === "number" ? item.bedrooms  : undefined;
-    const baths    = typeof item.bathrooms === "number" ? item.bathrooms : undefined;
-    const sqft     = typeof item.sqft      === "number" ? item.sqft      : undefined;
-    const yearBuilt = typeof item.year_built === "number" ? item.year_built : undefined;
+    // ── Property type ─────────────────────────────────────────────────────
+    const propType = toPropertyType(item.property_type ?? item.propertyType);
 
-    const lat: number | undefined = typeof item.latitude  === "number" ? item.latitude  : undefined;
-    const lng: number | undefined = typeof item.longitude === "number" ? item.longitude : undefined;
+    // ── Lead types ────────────────────────────────────────────────────────
+    const leadTypes = extractLeadTypes(item.lead_type);
 
-    // ── Lead type / status ────────────────────────────────────────────────
-    const leadTypes: string[] = Array.isArray(item.lead_type)
-      ? item.lead_type
-      : item.lead_type ? [item.lead_type] : [];
+    // ── MLS status ────────────────────────────────────────────────────────
+    const mlsActive  = item.lead_type?.mls_active  ?? false;
+    const mlsPending = item.lead_type?.mls_pending ?? false;
+    const status     =
+      item.mls_status   ??
+      (mlsActive  ? "Active"  :
+       mlsPending ? "Pending" :
+       leadTypes[0] ?? "off_market");
 
-    const status = item.mls_status ?? item.status ?? (leadTypes[0] ?? "off_market");
+    // ── Build URL ─────────────────────────────────────────────────────────
+    const url = buildListingUrl(propertyId, streetLine, city, state);
 
-    // ── Owner ─────────────────────────────────────────────────────────────
-    const ownerName  = item.owner_name ?? item.ownerName ?? undefined;
-    const ownerPhone = item.owner_phone ?? undefined;
-
-    // ── URL ───────────────────────────────────────────────────────────────
-    const url = propertyId
-      ? buildListingUrl(propertyId, streetLine, city, state)
-      : "";
-
-    if (!url) continue;
+    // Handle ownerName — Propwire may return it as string or array
+    let ownerName: string | undefined;
+    const rawOwnerName = item.owner_name ?? item.ownerName;
+    if (Array.isArray(rawOwnerName)) {
+      ownerName = rawOwnerName[0] ?? undefined;
+    } else if (typeof rawOwnerName === "string") {
+      ownerName = rawOwnerName;
+    }
 
     const listing: RawListing = {
       url,
       source:       "propwire",
       title:        streetLine || fullAddress,
       address:      fullAddress,
-      price,
+      price:        price ?? estimatedValue,   // use AVM as fallback price for filtering
       propwireEstimate: estimatedValue,
-      beds,
-      baths,
-      sqft,
-      propertyType: toPropertyType(item.property_type ?? item.propertyType),
+      beds:         typeof item.bedrooms  === "number" ? item.bedrooms  : undefined,
+      baths:        typeof item.bathrooms === "number" ? item.bathrooms : undefined,
+      sqft:         typeof item.building_area_sf === "number" ? item.building_area_sf : undefined,
+      propertyType: propType,
       lat,
       lng,
       ownerName,
-      ownerPhone,
+      ownerPhone:   item.owner_phone ?? undefined,
       status,
       daysOnMarket: typeof daysOld === "number" ? daysOld : undefined,
-      yearBuilt,
+      yearBuilt:    typeof item.year_built === "number" ? item.year_built : undefined,
       listedAt:     listDate ? new Date(listDate) : undefined,
       description:  leadTypes.join(", "),
     } as RawListing;
 
-    (listing as any)._estimatedEquity  = estimatedEquity;
-    (listing as any)._leadTypes        = leadTypes;
+    // Extra Propwire-specific fields for downstream use
     (listing as any)._propwireId       = propertyId;
+    (listing as any)._estimatedEquity  = estimatedEquity;
     (listing as any)._taxAssessment    = parsePrice(item.tax_assessment);
-    (listing as any)._lastSalePrice    = parsePrice(item.last_sale_price);
+    (listing as any)._lastSalePrice    = parsePrice(item.last_sold_price ?? item.last_sale_price);
+    (listing as any)._lastSaleDate     = item.last_sold_date ?? item.last_sale_date ?? null;
     (listing as any)._openMortgage     = parsePrice(item.open_mortgage_balance);
+    (listing as any)._leadTypes        = leadTypes;
 
     listings.push(listing);
 
     logger.debug(
       `[propwire-parser] ✓ ${fullAddress} | ` +
-      `list=$${price?.toLocaleString() ?? "?"} | ` +
+      `price=$${(price ?? estimatedValue)?.toLocaleString() ?? "?"} | ` +
       `AVM=$${estimatedValue?.toLocaleString() ?? "?"} | ` +
-      `${beds ?? "?"}bd ${baths ?? "?"}ba | ` +
+      `${item.bedrooms ?? "?"}bd/${item.bathrooms ?? "?"}ba | ` +
       `leads=[${leadTypes.join(",")}]`
     );
   }
 
-  const itemsWithDate = raw.filter(
-    (i: any) => i?.list_date ?? i?.listing_date ?? i?.days_on_market != null
-  ).length;
-  const allStale = itemsWithDate > 0 && staleCount >= itemsWithDate;
+  const allStale = staleCount > 0 && staleCount >= raw.length;
 
   logger.info(
-    `[propwire-parser] ${listings.length} valid | ${staleCount} stale | ` +
-    `total=${totalCount} pages=${totalPages}`
+    `[propwire-parser] ${listings.length} valid | ${staleCount} stale | hasMore=${hasMore}`
   );
 
-  return { listings, allStale, totalCount, totalPages };
+  return { listings, allStale, totalCount: raw.length, hasMore };
 }
 
-// ── __NEXT_DATA__ extractor (kept for fallback/detail pages) ──────────────────
+// ── Token extractor (kept for Inertia XHR / Oxylabs fallback) ────────────────
 
-export function extractNextData(html: string): any | null {
-  const match = html.match(
-    /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i
-  );
-  if (match?.[1]) {
-    try { return JSON.parse(match[1]); } catch {}
+export function extractPropwireToken(html: string): string | null {
+  if (!html || html.length < 500) return null;
+
+  // Method 1: data-page attribute (Inertia.js SPA pattern)
+  const dataPagePatterns = [
+    /id=["']app["'][^>]+data-page=["']([\s\S]+?)["']\s*>/i,
+    /data-page=["']([\s\S]+?)["']\s*(?:id|class|>)/i,
+    /data-page='([^']+)'/i,
+    /data-page="([^"]+)"/i,
+  ];
+
+  for (const pattern of dataPagePatterns) {
+    const m = html.match(pattern);
+    if (!m?.[1]) continue;
+    try {
+      let raw = m[1]
+        .replace(/&quot;/g, '"').replace(/&amp;/g, "&")
+        .replace(/&#039;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+      try { raw = decodeURIComponent(raw); } catch {}
+      const parsed = JSON.parse(raw);
+      const token  = parsed?.props?.token ?? parsed?.token ?? parsed?.props?.auth?.token ?? null;
+      if (token && typeof token === "string" && token.length > 50) {
+        logger.info("[propwire-parser] ✓ Token from data-page");
+        return token;
+      }
+    } catch { /* try next */ }
   }
 
-  const pwMatch = html.match(/window\.__propwireData__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/i);
-  if (pwMatch?.[1]) {
-    try { return { _propwireData: JSON.parse(pwMatch[1]) }; } catch {}
+  // Method 2: inline script JWT patterns
+  const scriptPatterns = [
+    /["']token["']\s*:\s*["'](ey[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+)["']/,
+    /window\._token\s*=\s*["'](ey[A-Za-z0-9_-]{20,})/,
+  ];
+  for (const p of scriptPatterns) {
+    const m = html.match(p);
+    if (m?.[1]) { logger.info("[propwire-parser] ✓ Token from inline script"); return m[1]; }
   }
 
+  logger.warn("[propwire-parser] ✗ No token found in HTML");
+  logger.debug(`[propwire-parser] HTML length=${html.length} has data-page=${html.includes("data-page")}`);
   return null;
-}
-
-// ── Propwire Estimate extraction from detail page (unchanged) ─────────────────
-
-export interface PropwireEstimate {
-  estimatedValue:  number;
-  estimatedEquity?: number;
-  taxAssessment?:  number;
-  lastSalePrice?:  number;
-}
-
-export function extractEstimateFromDetailPage(
-  nextData: any,
-  address:  string
-): PropwireEstimate | null {
-  const prop =
-    nextData?.props?.pageProps?.property ??
-    nextData?.props?.pageProps?.initialState?.property ??
-    nextData?._propwireData?.property ??
-    null;
-
-  if (prop) {
-    const ev = parsePrice(prop.estimated_value ?? prop.estimatedValue ?? prop.avm_value);
-    if (ev && ev > 10_000) {
-      const result: PropwireEstimate = { estimatedValue: ev };
-
-      const eq = parsePrice(prop.estimated_equity ?? prop.estimatedEquity);
-      if (eq) result.estimatedEquity = eq;
-
-      const ta = parsePrice(prop.tax_assessment ?? prop.taxAssessment);
-      if (ta) result.taxAssessment = ta;
-
-      const lsp = parsePrice(prop.last_sale_price ?? prop.lastSalePrice);
-      if (lsp) result.lastSalePrice = lsp;
-
-      logger.debug(
-        `[propwire-parser] Estimate for "${address}": ` +
-        `$${ev.toLocaleString()}` +
-        (result.estimatedEquity ? ` equity=$${result.estimatedEquity.toLocaleString()}` : "")
-      );
-      return result;
-    }
-  }
-
-  const found = deepFind(nextData, ["estimated_value", "estimatedValue", "avm_value"], 0);
-  if (found && found > 10_000) {
-    logger.debug(
-      `[propwire-parser] Estimate via deep scan for "${address}": $${found.toLocaleString()}`
-    );
-    return { estimatedValue: found };
-  }
-
-  logger.debug(`[propwire-parser] No estimate found in detail __NEXT_DATA__ for "${address}"`);
-  return null;
-}
-
-function deepFind(node: any, keys: string[], depth: number): number | null {
-  if (depth > 10 || node === null || typeof node !== "object") return null;
-  for (const key of keys) {
-    if (key in node) {
-      const v = parsePrice(node[key]);
-      if (v && v > 10_000) return v;
-    }
-  }
-  for (const k of Object.keys(node)) {
-    const found = deepFind(node[k], keys, depth + 1);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
-// ── Legacy HTML search page parser (kept for reference, no longer primary) ────
-
-export interface PropwireSearchResultLegacy {
-  listings:        RawListing[];
-  allStale:        boolean;
-  totalCount:      number;
-  totalPages:      number;
-}
-
-export function parsePropwireSearchPage(
-  nextData:        any,
-  applyDateFilter = true
-): PropwireSearchResultLegacy {
-  const pageProps = nextData?.props?.pageProps ?? {};
-  const searchState = pageProps?.initialState?.searchResults ?? pageProps;
-  const raw: any[] =
-    searchState?.properties ??
-    pageProps?.properties ??
-    nextData?._propwireData?.properties ??
-    [];
-
-  const totalCount: number =
-    searchState?.total ??
-    searchState?.totalCount ??
-    pageProps?.total ??
-    raw.length;
-
-  const totalPages: number =
-    searchState?.totalPages ??
-    (totalCount > 0 ? Math.ceil(totalCount / RESULTS_PER_PAGE) : 1);
-
-  logger.debug(
-    `[propwire-parser] (legacy HTML) properties=${raw.length} total=${totalCount}`
-  );
-
-  if (raw.length === 0) {
-    logger.debug(
-      `[propwire-parser] No properties in __NEXT_DATA__. ` +
-      `pageProps keys: ${Object.keys(pageProps).join(", ")}`
-    );
-    return { listings: [], allStale: true, totalCount: 0, totalPages: 1 };
-  }
-
-  // Reuse API parser logic since property shape is the same
-  return parsePropwireApiResponse({ data: { properties: raw, total: totalCount, last_page: totalPages } }, applyDateFilter);
 }

@@ -58,7 +58,7 @@ export const config = {
       "ohio", "oh", "cleveland", "columbus", "toledo", "milwaukee", "wisconsin", "wi",
     ],
   },
-
+ 
   // ── Sources ───────────────────────────────────────────────────────────────
   sources: {
     

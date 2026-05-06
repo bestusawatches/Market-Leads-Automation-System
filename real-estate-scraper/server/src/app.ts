@@ -15,6 +15,20 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// CORS middleware for frontend dev requests
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const allowedOrigin = process.env.CLIENT_ORIGIN || "http://localhost:3000";
+  res.header("Access-Control-Allow-Origin", allowedOrigin);
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 // Health check

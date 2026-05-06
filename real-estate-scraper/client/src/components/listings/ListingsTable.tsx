@@ -30,27 +30,26 @@ export const ListingsTable: React.FC<ListingsTableProps> = ({ listings, loading 
   return (
     <>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left border-b bg-gray-100">
-              <th className="px-4 py-3 font-semibold text-gray-700">Address</th>
-              <th className="px-4 py-3 font-semibold text-gray-700">Price</th>
-              <th className="px-4 py-3 font-semibold text-gray-700">Estimate</th>
-              <th className="px-4 py-3 font-semibold text-gray-700">Equity</th>
-              <th className="px-4 py-3 font-semibold text-gray-700">Deal Score</th>
-              <th className="px-4 py-3 font-semibold text-gray-700">Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {listings.map((listing) => (
-              <ListingRow
-                key={listing.id}
-                listing={listing}
-                onClick={() => setSelectedListing(listing)}
-              />
-            ))}
-          </tbody>
-        </table>
+        <div className="min-w-full max-h-[640px] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left border-b bg-gray-100">
+                <th className="px-4 py-3 font-semibold text-gray-700">Address</th>
+                <th className="px-4 py-3 font-semibold text-gray-700">Price</th>
+                <th className="px-4 py-3 font-semibold text-gray-700">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {listings.map((listing) => (
+                <ListingRow
+                  key={listing.id}
+                  listing={listing}
+                  onClick={() => setSelectedListing(listing)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {selectedListing && (

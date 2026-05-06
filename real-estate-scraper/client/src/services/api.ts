@@ -6,7 +6,7 @@ import type {
   SavedFilter,
 } from "./types";
 
-const API_BASE_URL = "/api/v1";
+const API_BASE_URL = "http://localhost:3005/api/v1";
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {

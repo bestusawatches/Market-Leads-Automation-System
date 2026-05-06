@@ -1,19 +1,31 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header, PageContainer } from '@/components/layout';
 import { ListingsTable, ScraperControls } from '@/components/listings';
 import { ExportButton } from '@/components/common';
 import { FilterBar } from '@/components/filters';
 import { useListings } from '@/hooks';
+import type { Listing } from '@/services';
+
+interface ListingFilters {
+  minPrice: string;
+  maxPrice: string;
+  source: string;
+}
 
 export const ListingsPage: React.FC = () => {
   const { listings, loading, error, refetch } = useListings();
-  const [filteredListings, setFilteredListings] = useState(listings);
+  const [filteredListings, setFilteredListings] = useState<Listing[]>(listings);
+  const [filters, setFilters] = useState<ListingFilters>({
+    minPrice: '',
+    maxPrice: '',
+    source: 'all',
+  });
+  const [appliedFilters, setAppliedFilters] = useState<ListingFilters>(filters);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastRefreshTime, setLastRefreshTime] = useState<string>(new Date().toISOString());
 
-  const handleFilter = () => {
-    // TODO: Implement client-side filtering based on quick filters
-    setFilteredListings(listings);
+  const applyListingFilter = () => {
+    setAppliedFilters(filters);
   };
 
   const handleRefresh = async () => {
@@ -31,6 +43,27 @@ export const ListingsPage: React.FC = () => {
     }, 30000); // Refresh after 30 seconds as a sample check
     return () => clearTimeout(refreshTimer);
   };
+
+  useEffect(() => {
+    const minPriceValue = parseInt(appliedFilters.minPrice, 10);
+    const maxPriceValue = parseInt(appliedFilters.maxPrice, 10);
+
+    setFilteredListings(
+      listings.filter((listing) => {
+        const validPrice = typeof listing.price === 'number';
+        const matchesMin =
+          !Number.isFinite(minPriceValue) ||
+          (validPrice && listing.price! >= minPriceValue);
+        const matchesMax =
+          !Number.isFinite(maxPriceValue) ||
+          (validPrice && listing.price! <= maxPriceValue);
+        const matchesSource =
+          appliedFilters.source === 'all' || listing.source === appliedFilters.source;
+
+        return matchesMin && matchesMax && matchesSource;
+      })
+    );
+  }, [listings, appliedFilters]);
 
   React.useEffect(() => {
     setFilteredListings(listings);
@@ -84,10 +117,14 @@ export const ListingsPage: React.FC = () => {
 
         {/* Filter Bar */}
         <FilterBar
-          onMinPriceChange={() => handleFilter()}
-          onMaxPriceChange={() => handleFilter()}
-          onBedroomsChange={() => handleFilter()}
-          onLocationChange={() => handleFilter()}
+          minPrice={filters.minPrice}
+          maxPrice={filters.maxPrice}
+          source={filters.source}
+          onMinPriceChange={(value) => setFilters((prev) => ({ ...prev, minPrice: value }))}
+          onMaxPriceChange={(value) => setFilters((prev) => ({ ...prev, maxPrice: value }))}
+          onSourceChange={(value) => setFilters((prev) => ({ ...prev, source: value }))}
+          onApply={applyListingFilter}
+          disabled={loading}
         />
 
         {/* Error Display */}
@@ -102,7 +139,7 @@ export const ListingsPage: React.FC = () => {
         )}
 
         {/* Listings Table */}
-        <div className="bg-white rounded-lg shadow overflow-hidden">
+        <div className="bg-white rounded-lg shadow overflow-hidden max-h-[720px]">
           {filteredListings.length === 0 && !loading ? (
             <div className="p-8 text-center">
               <p className="text-gray-500 text-lg mb-4">No listings found</p>

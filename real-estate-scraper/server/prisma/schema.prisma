@@ -18,6 +18,7 @@ model Property {
   // 🔥 Canonical identity
   normalizedAddress   String   @unique
   address             String?
+  url                 String?  // optional link to listing (populated during enrichment phase)
 
   city                String?
   state               String?
@@ -95,6 +96,8 @@ model Estimate {
 
   source      String   // "zillow" | "redfin" | "realtor" | "propwire"
   value       Int
+
+  sourceListingId String?  // ID of ZillowListing/RedfinListing/RealtorListing/PropwireListing
 
   fetchedAt   DateTime @default(now())
 

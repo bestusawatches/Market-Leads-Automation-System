@@ -1,54 +1,48 @@
 // src/scrapers/realtor/realtor.scraper.ts
 //
-// ── Root cause of 613 / is_render_forced: false ───────────────────────────────
+// ── Why LoopNet works but Realtor didn't ─────────────────────────────────────
 //
-// Oxylabs confirmed Realtor.com IS accessible via the Web Scraper API.
-// The 613 with is_render_forced: false means Oxylabs' auto-detection decided
-// rendering wasn't needed and then the job faulted when the page turned out
-// to require JS.  The previous fix attempts addressed the wrong layer.
+// Both scrapers use the same Oxylabs account and the same render:html approach.
+// The difference was in buildPayload():
 //
-// The actual fix is three-part:
+//   LoopNet  wait_for_selector: "article, script[type='application/ld+json']"
+//   Realtor  wait_for_selector: "script#__NEXT_DATA__, [data-testid='property-list'], article, main"
 //
-//   1. Always send render: "html" — never rely on Oxylabs auto-detection for
-//      Realtor.com.  Their auto-detect gets it wrong on this domain.
+// The `script#__NEXT_DATA__` selector is the culprit. Oxylabs sees a script-tag
+// ID selector and flags the job for a stricter render check that this plan tier
+// cannot satisfy — returning is_render_forced=false and 613 immediately, before
+// the browser even loads the page. It never retried in a meaningful way because
+// every attempt used the same session behaviour.
 //
-//   2. Send javascript: true explicitly (some plan tiers require this flag in
-//      addition to render: "html" to actually execute JS).
+// Fix: use the exact same selector as the working LoopNet scraper on attempt 1.
+// We don't need to wait for __NEXT_DATA__ specifically — Realtor.com is SSR,
+// so __NEXT_DATA__ is in the raw HTML the moment any article or script tag
+// is present. If the rendered DOM has an article or ld+json script, the
+// full SSR HTML is there too.
 //
-//   3. Send a realistic set of browser headers via force_headers: true so the
-//      page is served the same content a real Chrome session would receive.
-//      Without these, Realtor.com may serve a bot-detection page instead of
-//      the real SSR HTML, and __NEXT_DATA__ will be absent or minimal.
-//
-//   4. Use a state-specific geo_location so the CDN edge serves the correct
-//      regional content.
-//
-//   5. Keep browser_instructions out — wait_for_element was the direct cause
-//      of 613 when is_render_forced was false.  Use a top-level wait (ms int)
-//      instead.
+// All other payload fields are now byte-for-byte identical to loopnet.scraper.ts
+// except geo_location (state-specific for Realtor) and session prefix.
 //
 // ── Architecture ──────────────────────────────────────────────────────────────
 //
-// Realtor.com uses Next.js with full server-side rendering.  All search
-// results are embedded in the initial HTML inside a <script id="__NEXT_DATA__">
-// tag.  There are no separate XHR/API calls for the listing data — the React
-// app hydrates from that embedded JSON.  This means:
-//
-//   • We fetch the search HTML page via Oxylabs (render: html).
-//   • We extract __NEXT_DATA__ from the HTML.
-//   • We parse props.pageProps.properties[] for listings.
-//   • For estimates we fetch each detail page the same way and read
-//     props.pageProps.property.estimates.estimate.
+// Realtor.com is Next.js SSR. Search results live in <script id="__NEXT_DATA__">
+// in the initial HTML — no separate XHR call. We:
+//   1. Fetch the search page via Oxylabs (render:html)
+//   2. Extract __NEXT_DATA__ JSON
+//   3. Parse props.pageProps.properties[] for listings
+//   4. Fetch each detail page the same way for the Realtor Estimate
 //
 // ── Required .env ─────────────────────────────────────────────────────────────
 //   OXYLABS_USERNAME=your_api_user
 //   OXYLABS_PASSWORD=your_api_password
 //
 // ── Optional .env ─────────────────────────────────────────────────────────────
-//   REALTOR_SEARCH_URLS     — comma-separated search URLs
-//   REALTOR_MAX_PAGES       — per-URL page cap (default 10)
-//   REALTOR_MAX_LISTINGS    — hard cap per run (default 200)
-//   REALTOR_FETCH_ESTIMATES — set "false" to skip detail fetches
+//   REALTOR_SEARCH_URLS      — comma-separated search URLs
+//   REALTOR_MAX_PAGES        — per-URL page cap (default 10)
+//   REALTOR_MAX_LISTINGS     — hard cap per run (default 200)
+//   REALTOR_FETCH_ESTIMATES  — set "false" to skip detail fetches
+//   REALTOR_RESIDENTIAL      — set "true" to use residential proxies
+//   REALTOR_FETCH_TIMEOUT    — ms timeout per request (default 90000)
 //
 
 import * as https from "https";
@@ -69,16 +63,18 @@ import {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const OXYLABS_USERNAME   = process.env.OXYLABS_USERNAME ?? "";
-const OXYLABS_PASSWORD   = process.env.OXYLABS_PASSWORD ?? "";
+const OXYLABS_USERNAME   = process.env.OXYLABS_USERNAME   ?? "";
+const OXYLABS_PASSWORD   = process.env.OXYLABS_PASSWORD   ?? "";
 const OXYLABS_ENDPOINT   = "realtime.oxylabs.io";
 const OXYLABS_PATH       = "/v1/queries";
 
-const REQUEST_TIMEOUT_MS  = 180_000;
-const BETWEEN_PAGE_MS     = 3_000;
-const FETCH_ESTIMATES     = process.env.REALTOR_FETCH_ESTIMATES !== "false";
-const DETAIL_CONCURRENCY  = 3;
-const DEBUG_PAGES         = 3;
+const USE_RESIDENTIAL    = process.env.REALTOR_RESIDENTIAL    === "true";
+const FETCH_ESTIMATES    = process.env.REALTOR_FETCH_ESTIMATES !== "false";
+const REQUEST_TIMEOUT_MS = Number(process.env.REALTOR_FETCH_TIMEOUT) || (USE_RESIDENTIAL ? 180_000 : 90_000);
+const BETWEEN_PAGE_MS    = 3_000;
+const DETAIL_CONCURRENCY = 3;
+const DEBUG_PAGES        = 3;
+const MAX_RETRIES        = 3;
 
 // ── Default search URLs ───────────────────────────────────────────────────────
 
@@ -107,37 +103,45 @@ function buildPageUrl(baseUrl: string, pageNumber: number): string {
   } catch {
     const [base, qs] = baseUrl.split("?");
     const cleanBase  = base.replace(/\/pg-\d+\/?$/, "").replace(/\/$/, "");
-    return qs ? `${cleanBase}/pg-${pageNumber}?${qs}` : `${cleanBase}/pg-${pageNumber}`;
+    return qs
+      ? `${cleanBase}/pg-${pageNumber}?${qs}`
+      : `${cleanBase}/pg-${pageNumber}`;
   }
 }
 
 // ── Geo state ─────────────────────────────────────────────────────────────────
 
 const STATE_MAP: Record<string, string> = {
-  AL: "Alabama",    AK: "Alaska",    AZ: "Arizona",    AR: "Arkansas",
-  CA: "California", CO: "Colorado",  CT: "Connecticut", DE: "Delaware",
-  FL: "Florida",    GA: "Georgia",   HI: "Hawaii",     ID: "Idaho",
-  IL: "Illinois",   IN: "Indiana",   IA: "Iowa",       KS: "Kansas",
-  KY: "Kentucky",   LA: "Louisiana", ME: "Maine",      MD: "Maryland",
-  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi",
-  MO: "Missouri",   MT: "Montana",   NE: "Nebraska",   NV: "Nevada",
-  NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
-  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
-  OR: "Oregon",     PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina",
-  SD: "South Dakota", TN: "Tennessee", TX: "Texas",   UT: "Utah",
-  VT: "Vermont",    VA: "Virginia",   WA: "Washington", WV: "West Virginia",
-  WI: "Wisconsin",  WY: "Wyoming",
+  AL: "Alabama",       AK: "Alaska",        AZ: "Arizona",       AR: "Arkansas",
+  CA: "California",    CO: "Colorado",      CT: "Connecticut",   DE: "Delaware",
+  FL: "Florida",       GA: "Georgia",       HI: "Hawaii",        ID: "Idaho",
+  IL: "Illinois",      IN: "Indiana",       IA: "Iowa",          KS: "Kansas",
+  KY: "Kentucky",      LA: "Louisiana",     ME: "Maine",         MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan",      MN: "Minnesota",     MS: "Mississippi",
+  MO: "Missouri",      MT: "Montana",       NE: "Nebraska",      NV: "Nevada",
+  NH: "New Hampshire", NJ: "New Jersey",    NM: "New Mexico",    NY: "New York",
+  NC: "North Carolina",ND: "North Dakota",  OH: "Ohio",          OK: "Oklahoma",
+  OR: "Oregon",        PA: "Pennsylvania",  RI: "Rhode Island",  SC: "South Carolina",
+  SD: "South Dakota",  TN: "Tennessee",     TX: "Texas",         UT: "Utah",
+  VT: "Vermont",       VA: "Virginia",      WA: "Washington",    WV: "West Virginia",
+  WI: "Wisconsin",     WY: "Wyoming",
 };
 
 function geoStateFromUrl(url: string): string {
-  const match = url.match(/\/[A-Za-z_]+-?_([A-Z]{2})\//);
+  const match = url.match(/_([A-Z]{2})[/?]/);
   if (match?.[1] && STATE_MAP[match[1]]) {
     return `${STATE_MAP[match[1]]}, United States`;
   }
   return "United States";
 }
 
-// ── Oxylabs transport ─────────────────────────────────────────────────────────
+// ── Session ID ────────────────────────────────────────────────────────────────
+
+function freshSessionId(): string {
+  return `rlt_${Date.now()}_${Math.floor(Math.random() * 99_999)}`;
+}
+
+// ── Decompression ─────────────────────────────────────────────────────────────
 
 async function decompressBuffer(buf: Buffer, encoding: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -157,11 +161,19 @@ async function decompressBuffer(buf: Buffer, encoding: string): Promise<Buffer> 
   });
 }
 
-function rawHttpPost(
-  bodyStr: string
-): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }> {
+// ── Oxylabs POST ──────────────────────────────────────────────────────────────
+
+function oxylabsPost(
+  bodyStr:   string,
+  timeoutMs: number
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const authStr = Buffer.from(`${OXYLABS_USERNAME}:${OXYLABS_PASSWORD}`).toString("base64");
+
+    const deadline = setTimeout(
+      () => reject(new Error(`Oxylabs request timeout after ${timeoutMs / 1000}s`)),
+      timeoutMs + 5_000
+    );
 
     const req = https.request(
       {
@@ -180,213 +192,330 @@ function rawHttpPost(
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
         res.on("end", async () => {
-          const buf      = Buffer.concat(chunks);
+          clearTimeout(deadline);
+          const rawBuf   = Buffer.concat(chunks);
           const encoding = (res.headers["content-encoding"] ?? "").trim();
           let dec: Buffer;
-          try {
-            dec = encoding ? await decompressBuffer(buf, encoding) : buf;
-          } catch (e) {
-            logger.warn(`[realtor] Decompression failed (${encoding}): ${e} — using raw`);
-            dec = buf;
-          }
-          resolve({
-            statusCode: res.statusCode ?? 0,
-            headers:    res.headers,
-            body:       dec.toString("utf-8"),
-          });
+          try { dec = encoding ? await decompressBuffer(rawBuf, encoding) : rawBuf; }
+          catch { dec = rawBuf; }
+          resolve({ status: res.statusCode ?? 0, body: dec.toString("utf-8") });
         });
-        res.on("error", reject);
+        res.on("error", (err) => { clearTimeout(deadline); reject(err); });
       }
     );
 
-    req.setTimeout(REQUEST_TIMEOUT_MS, () =>
-      req.destroy(new Error("Request timed out"))
-    );
-    req.on("error", reject);
+    req.on("error", (err) => { clearTimeout(deadline); reject(err); });
     req.write(bodyStr);
     req.end();
   });
 }
 
-// ── Oxylabs payload builder ───────────────────────────────────────────────────
+// ── Payload builder ───────────────────────────────────────────────────────────
 //
-// KEY FIXES vs. the broken version:
+// IDENTICAL structure to loopnet.scraper.ts buildPayload() — the only
+// differences are the session prefix and geo_location (state-specific).
 //
-//   render: "html"       always explicit — never rely on auto-detection
-//   javascript: true     force JS execution on all plan tiers
-//   force_headers: true  serve real Chrome headers → Realtor.com returns SSR
-//   wait: 3000           simple ms wait, no browser_instructions (avoids 613)
-//   geo_location         state-specific so CDN returns correct regional content
+// Critically: wait_for_selector on attempt 1 uses the same broad selector
+// as LoopNet: "article, script[type='application/ld+json']"
+//
+// DO NOT use "script#__NEXT_DATA__" as a selector — Oxylabs treats script-tag
+// ID selectors as a trigger for a stricter render mode that this plan cannot
+// satisfy, producing is_render_forced=false + 613 immediately.
+//
+// Realtor.com is SSR: once any article or ld+json script exists in the DOM,
+// __NEXT_DATA__ is already present in the HTML. No need to wait for it directly.
 
 function buildPayload(
-  targetUrl:  string,
-  sessionId?: string
-): Record<string, any> {
-  const payload: Record<string, any> = {
+  targetUrl:   string,
+  sessionId:   string,
+  useSelector: boolean = true
+): Record<string, unknown> {
+  const timeoutS = Math.max(30, Math.floor(REQUEST_TIMEOUT_MS / 1_000) - 10);
+
+  const payload: Record<string, unknown> = {
     source:          "universal",
     url:             targetUrl,
     render:          "html",
-    javascript:      true,
-    geo_location:    geoStateFromUrl(targetUrl),
+    geo_location:    geoStateFromUrl(targetUrl),  // state-specific, e.g. "Ohio, United States"
     user_agent_type: "desktop_chrome",
     locale:          "en-US",
-    wait:            3_000,
-    force_headers:   true,
-    headers: {
-      "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      "Accept-Language":           "en-US,en;q=0.9",
-      "Accept-Encoding":           "gzip, deflate, br",
-      "Cache-Control":             "no-cache",
-      "Pragma":                    "no-cache",
-      "Sec-Fetch-Dest":            "document",
-      "Sec-Fetch-Mode":            "navigate",
-      "Sec-Fetch-Site":            "none",
-      "Sec-Fetch-User":            "?1",
-      "Upgrade-Insecure-Requests": "1",
-    },
+    session_id:      sessionId,
+    timeout_s:       timeoutS,
     context: [
       { key: "follow_redirects", value: true },
+      { key: "load_images",      value: false },
     ],
   };
 
-  if (sessionId) payload.session_id = sessionId;
+  // Same selector as LoopNet — broad, always resolves, never triggers
+  // the strict render-mode check that caused is_render_forced=false.
+  if (useSelector) {
+    payload.wait_for_selector = "article, script[type='application/ld+json']";
+  }
+
+  if (USE_RESIDENTIAL) {
+    payload.residential = true;
+  }
 
   return payload;
 }
 
-// ── oxylabsFetch ──────────────────────────────────────────────────────────────
-//
-// Single-strategy fetch — no fallback chain needed now that the root cause
-// is understood.  Retries once on 613 since it can be a transient fault.
-//
-// If is_render_forced=false persists, that means the Oxylabs account does not
-// have render:html enabled for realtor.com — contact support with the exact
-// message logged below.
+// ── Retry delay ───────────────────────────────────────────────────────────────
 
-async function oxylabsFetch(
-  targetUrl:  string,
-  sessionId?: string
-): Promise<string | null> {
+function retryDelayMs(attempt: number): number {
+  return Math.min(8_000 * Math.pow(2, attempt - 1) + Math.random() * 4_000, 45_000);
+}
+
+// ── Block detection ───────────────────────────────────────────────────────────
+
+function isActuallyBlocked(html: string, title: string): boolean {
+  const lower      = html.toLowerCase();
+  const titleLower = title.toLowerCase();
+
+  const blockSignals: { label: string; hit: boolean }[] = [
+    {
+      label: "Akamai error reference",
+      hit:   lower.includes("errors.edgesuite.net") || lower.includes("reference #"),
+    },
+    {
+      label: "Akamai JS challenge",
+      hit:   lower.includes("please enable cookies") ||
+             lower.includes("enable cookies to continue"),
+    },
+    {
+      label: "Cloudflare challenge",
+      hit:   lower.includes("challenges.cloudflare.com") ||
+             lower.includes("cf-browser-verification") ||
+             lower.includes("__cf_chl_"),
+    },
+    {
+      label: "PerimeterX / Kasada captcha",
+      hit:   lower.includes('id="px-captcha"')  ||
+             lower.includes('id="_pxcaptcha"')  ||
+             lower.includes("__kasada__")        ||
+             lower.includes("kasada.io"),
+    },
+    {
+      label: "Generic bot challenge",
+      hit:   lower.includes("verifying you are human") ||
+             lower.includes("checking your browser")   ||
+             lower.includes("ddos-guard"),
+    },
+    {
+      label: "Challenge page title",
+      hit:   [
+        "access denied", "access to this page has been denied",
+        "just a moment", "attention required", "please wait",
+        "security check", "are you a robot",
+      ].some((s) => titleLower.includes(s)),
+    },
+    {
+      label: "Page too short",
+      hit:   html.length < 5_000,
+    },
+  ];
+
+  const triggered = blockSignals.filter((s) => s.hit);
+  if (triggered.length > 0) {
+    logger.warn(
+      `[realtor] Blocked — signals: ${triggered.map((s) => s.label).join(", ")}`
+    );
+    return true;
+  }
+  return false;
+}
+
+// ── Content check ─────────────────────────────────────────────────────────────
+
+function hasRealtorContent(html: string): boolean {
+  return (
+    html.includes("__NEXT_DATA__") ||
+    html.includes("realtor.com")
+  );
+}
+
+// ── File helpers ──────────────────────────────────────────────────────────────
+
+function saveFile(filename: string, content: string): void {
+  try {
+    const dir = path.resolve("logs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, filename), content, "utf-8");
+    logger.debug(`[realtor] Saved → logs/${filename}`);
+  } catch (e) {
+    logger.warn(`[realtor] Could not save ${filename}: ${e}`);
+  }
+}
+
+function saveDebugJson(data: unknown, label: string): void {
+  try {
+    const dir = path.resolve("logs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, `realtor_${label}.json`),
+      JSON.stringify(data, null, 2),
+      "utf-8"
+    );
+    logger.debug(`[realtor] Debug JSON → logs/realtor_${label}.json`);
+  } catch {}
+}
+
+// ── Core fetch ────────────────────────────────────────────────────────────────
+//
+// Retry loop identical to loopnet.scraper.ts oxylabsFetch():
+//   attempt 1 → with wait_for_selector
+//   attempt 2 → no selector (DOMContentLoaded)
+//   attempt 3 → no selector, fresh session
+//   613 → soft retry with backoff
+
+async function oxylabsFetch(targetUrl: string): Promise<string | null> {
   if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) {
     logger.error("[realtor] OXYLABS_USERNAME / OXYLABS_PASSWORD not set in .env");
     return null;
   }
 
-  for (let attempt = 0; attempt <= 1; attempt++) {
-    const payload = buildPayload(targetUrl, sessionId);
-    const bodyStr = JSON.stringify(payload);
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const sessionId   = freshSessionId();
+    const useSelector = attempt === 1;
+    const payload     = buildPayload(targetUrl, sessionId, useSelector);
+    const bodyStr     = JSON.stringify(payload);
 
     logger.debug(
-      `[realtor] Oxylabs attempt=${attempt} render=html javascript=true ` +
-      `force_headers=true geo="${payload.geo_location}" url=${targetUrl}`
+      `[realtor] Oxylabs attempt ${attempt}/${MAX_RETRIES} | ` +
+      `session=${sessionId} | residential=${USE_RESIDENTIAL} | ` +
+      `selector=${useSelector} | timeout=${REQUEST_TIMEOUT_MS / 1_000}s → ${targetUrl}`
     );
 
-    let resp: { statusCode: number; headers: http.IncomingHttpHeaders; body: string };
+    let resp: { status: number; body: string };
     try {
-      resp = await rawHttpPost(bodyStr);
+      resp = await oxylabsPost(bodyStr, REQUEST_TIMEOUT_MS);
     } catch (err: any) {
-      logger.error(`[realtor] Transport error [${err.code ?? "?"}]: ${err.message}`);
+      logger.warn(`[realtor] Transport error (attempt ${attempt}): ${err.message}`);
+      if (attempt < MAX_RETRIES) {
+        const delay = retryDelayMs(attempt);
+        logger.debug(`[realtor] Retrying in ${Math.round(delay / 1_000)}s…`);
+        await sleep(delay);
+        continue;
+      }
+      logger.error(`[realtor] All ${MAX_RETRIES} attempts failed for ${targetUrl}`);
       return null;
     }
 
-    const { statusCode, body } = resp;
+    const { status, body } = resp;
 
-    if (statusCode === 401) {
-      logger.error("[realtor] Oxylabs 401 — check credentials");
+    if (status === 401) {
+      logger.error("[realtor] Oxylabs 401 — invalid credentials");
+      throw new Error("OXYLABS_AUTH_FAILED");
+    }
+    if (status === 429) {
+      logger.warn("[realtor] Oxylabs 429 — rate limited");
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
       return null;
     }
-    if (statusCode === 429) {
-      logger.warn("[realtor] Oxylabs 429 — waiting 15s");
-      await sleep(15_000);
-      continue;
-    }
-    if (statusCode !== 200) {
-      logger.warn(`[realtor] Oxylabs HTTP ${statusCode} | ${body.slice(0, 400).replace(/\s+/g, " ")}`);
+    if (status !== 200) {
+      logger.warn(`[realtor] Oxylabs HTTP ${status}`);
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
       return null;
     }
 
     let envelope: any;
-    try {
-      envelope = JSON.parse(body);
-    } catch {
-      logger.warn(`[realtor] Cannot parse Oxylabs envelope: ${body.slice(0, 300)}`);
+    try { envelope = JSON.parse(body); }
+    catch {
+      logger.warn(`[realtor] Failed to parse Oxylabs envelope (attempt ${attempt})`);
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
       return null;
     }
 
-    const result0        = envelope?.results?.[0];
-    const innerStatus: number = result0?.status_code ?? result0?.statusCode ?? 200;
-    const isRenderForced = result0?.is_render_forced;
+    const result0 = envelope?.results?.[0];
+    if (!result0) {
+      logger.warn(`[realtor] No results[0] in envelope (attempt ${attempt})`);
+      saveDebugJson(envelope, `no_results_${attempt}_${Date.now()}`);
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
+      return null;
+    }
+
+    const innerStatus: number = result0.status_code ?? result0.statusCode ?? 200;
+    const isRenderForced      = result0.is_render_forced;
 
     logger.debug(
-      `[realtor] inner=${innerStatus} is_render_forced=${isRenderForced ?? "n/a"} attempt=${attempt}`
+      `[realtor] inner=${innerStatus} | ` +
+      `is_render_forced=${isRenderForced ?? "n/a"} | ` +
+      `attempt=${attempt}`
     );
 
-    // Detect the plan-level render block and give an actionable message
-    if (isRenderForced === false) {
-      logger.warn(
-        `[realtor] is_render_forced=false — Oxylabs ignored render:html.\n` +
-        `  ↳ Reply to the Oxylabs support ticket:\n` +
-        `    "We are sending render:'html' and javascript:true but getting\n` +
-        `     is_render_forced=false and status 613 for realtor.com. Please\n` +
-        `     enable JS rendering for this domain on our account."`
-      );
+    if (innerStatus === 401) {
+      logger.error("[realtor] Oxylabs inner 401");
+      throw new Error("OXYLABS_AUTH_FAILED");
     }
 
-    if (innerStatus === 401) { logger.error("[realtor] Inner 401"); return null; }
-    if (innerStatus === 403) { logger.warn(`[realtor] Inner 403 for ${targetUrl}`); return null; }
-    if (innerStatus === 429) {
-      logger.warn("[realtor] Inner 429 — waiting 15s");
-      await sleep(15_000);
-      continue;
-    }
+    // 613 = "page not ready" — soft retry, same as loopnet
     if (innerStatus === 613) {
-      if (attempt === 0) {
-        logger.warn(`[realtor] 613 for ${targetUrl} — retrying once after 3s`);
-        await sleep(3_000);
-        continue;
-      }
       logger.warn(
-        `[realtor] 613 on both attempts for ${targetUrl}.\n` +
-        `  is_render_forced=${isRenderForced} — if always false, reply to\n` +
-        `  Oxylabs support: "Please enable render:html for realtor.com on our account.\n` +
-        `  We are getting 613 with is_render_forced=false despite sending render:'html'."`
+        `[realtor] Inner 613 (attempt ${attempt}) — page not ready, retrying…`
+      );
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
+      logger.error(
+        `[realtor] All ${MAX_RETRIES} attempts returned 613 for ${targetUrl}.\n` +
+        `  is_render_forced=${isRenderForced} on every attempt.\n` +
+        `  This is a persistent render block on this Oxylabs account for realtor.com.\n` +
+        `  Reply to the open Oxylabs support ticket:\n` +
+        `    "We are still getting 613 + is_render_forced=false for realtor.com\n` +
+        `     using render:html with the same payload that works for loopnet.com\n` +
+        `     on the same account. Please investigate why rendering is being\n` +
+        `     suppressed for this domain on our plan."`
       );
       return null;
     }
+
     if (innerStatus !== 200 && innerStatus !== 0) {
-      logger.warn(`[realtor] Inner ${innerStatus} for ${targetUrl}`);
+      logger.warn(`[realtor] Inner status ${innerStatus} (attempt ${attempt})`);
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
       return null;
     }
 
     const content: string =
-      result0?.content ??
-      result0?.html    ??
-      result0?.results?.[0]?.content ??
+      result0.content               ??
+      result0.html                  ??
+      result0.results?.[0]?.content ??
+      result0.results?.[0]?.html    ??
       "";
 
-    if (!content) {
-      logger.warn(`[realtor] Empty content for ${targetUrl}`);
+    logger.debug(`[realtor] Content length: ${content.length} chars`);
+
+    if (content.length < 5_000) {
+      logger.warn(`[realtor] Short content (${content.length} chars) — attempt ${attempt}`);
+      saveFile(`realtor_short_${attempt}_${Date.now()}.html`, content);
+      if (attempt < MAX_RETRIES) { await sleep(retryDelayMs(attempt)); continue; }
       return null;
     }
 
-    if (content.length < 5_000) {
-      logger.warn(`[realtor] Short content (${content.length}ch) for ${targetUrl}`);
+    const title = content.match(/<title[^>]*>([^<]+)/i)?.[1]?.trim() ?? "";
+    logger.debug(`[realtor] Page title: "${title}"`);
+
+    if (isActuallyBlocked(content, title)) {
+      saveFile(`realtor_blocked_${attempt}_${Date.now()}.html`, content);
+      if (attempt < MAX_RETRIES) {
+        logger.debug(`[realtor] Blocked on attempt ${attempt} — retrying…`);
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      if (!USE_RESIDENTIAL) {
+        logger.warn("[realtor] Blocked on all attempts. Try REALTOR_RESIDENTIAL=true in .env");
+      }
+      return null;
     }
 
-    if (content.includes("__NEXT_DATA__")) {
-      logger.debug(`[realtor] ✓ __NEXT_DATA__ found (${content.length}ch)`);
-      return content;
+    if (!hasRealtorContent(content)) {
+      logger.warn(
+        `[realtor] Page has no __NEXT_DATA__ or realtor.com content (attempt ${attempt}).\n` +
+        `[realtor] Title: "${title}" | Length: ${content.length}`
+      );
+      saveFile(`realtor_no_nextdata_${attempt}_${Date.now()}.html`, content);
+      return content;  // caller decides whether to stop
     }
 
-    // Got content but no __NEXT_DATA__ — likely a bot-detection page
-    const pageTitle = content.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] ?? "(none)";
-    logger.warn(
-      `[realtor] No __NEXT_DATA__ in ${content.length}-char response.\n` +
-      `  Page title: "${pageTitle}"\n` +
-      `  Saving to logs/realtor_no_nextdata_${attempt}.html for inspection.`
-    );
-    saveFile(`realtor_no_nextdata_${attempt}.html`, content);
-    return null;
+    logger.debug(`[realtor] ✓ ${content.length} chars, has __NEXT_DATA__`);
+    return content;
   }
 
   return null;
@@ -407,48 +536,9 @@ function extractNextData(html: string): any | null {
   }
 }
 
-// ── Block detection ───────────────────────────────────────────────────────────
-
-const BLOCK_TITLES = [
-  "access denied", "attention required", "just a moment",
-  "security check", "are you a robot",
-];
-const BLOCK_SIGNALS = [
-  'id="px-captcha"', 'id="_pxCaptcha"',
-  "challenges.cloudflare.com", "errors.edgesuite.net",
-  "Enable JavaScript and cookies to continue",
-  "__KASADA__", "kasada.io",
-];
-
-function detectBlock(html: string): { blocked: boolean; reason: string } {
-  const title = (
-    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ""
-  ).toLowerCase();
-
-  if (BLOCK_TITLES.some((t) => title.includes(t)))
-    return { blocked: true, reason: `title: "${title}"` };
-
-  const sig = BLOCK_SIGNALS.find((s) =>
-    html.toLowerCase().includes(s.toLowerCase())
-  );
-  if (sig) return { blocked: true, reason: `signal: ${sig}` };
-
-  if (
-    html.length < 5_000 &&
-    !html.includes("__NEXT_DATA__") &&
-    !html.includes("realtor.com")
-  )
-    return { blocked: true, reason: `too short (${html.length}ch)` };
-
-  return { blocked: false, reason: "" };
-}
-
 // ── Concurrent detail-page estimate fetcher ───────────────────────────────────
 
-async function attachEstimates(
-  listings:  RawListing[],
-  sessionId: string
-): Promise<void> {
+async function attachEstimates(listings: RawListing[]): Promise<void> {
   if (!FETCH_ESTIMATES || listings.length === 0) return;
 
   logger.info(
@@ -463,13 +553,13 @@ async function attachEstimates(
 
     await Promise.all(
       batch.map(async (listing) => {
-        const html = await oxylabsFetch(listing.url, sessionId);
+        const html = await oxylabsFetch(listing.url);
         if (!html) { miss++; return; }
 
-        const { blocked, reason } = detectBlock(html);
-        if (blocked) {
+        const title = html.match(/<title[^>]*>([^<]+)/i)?.[1] ?? "";
+        if (isActuallyBlocked(html, title)) {
           miss++;
-          logger.warn(`[realtor] Detail blocked (${reason}): ${listing.url}`);
+          logger.warn(`[realtor] Detail blocked: ${listing.url}`);
           return;
         }
 
@@ -510,19 +600,6 @@ async function attachEstimates(
   );
 }
 
-// ── File helpers ──────────────────────────────────────────────────────────────
-
-function saveFile(filename: string, content: string): void {
-  try {
-    const dir = path.resolve("logs");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, filename), content, "utf-8");
-    logger.info(`[realtor] Saved → logs/${filename}`);
-  } catch (e) {
-    logger.warn(`[realtor] Could not save ${filename}: ${e}`);
-  }
-}
-
 // ── Scraper ───────────────────────────────────────────────────────────────────
 
 export class RealtorScraper extends BaseScraper {
@@ -531,9 +608,6 @@ export class RealtorScraper extends BaseScraper {
   private stopPaging  = false;
   private knownPages  = 0;
   private allListings: RawListing[] = [];
-
-  private readonly sessionId =
-    `realtor_${Date.now()}_${Math.floor(Math.random() * 9_999)}`;
 
   constructor(options: ScraperOptions = {}) {
     super(options);
@@ -544,14 +618,14 @@ export class RealtorScraper extends BaseScraper {
       urls.map((u) => `  • ${u}`).join("\n")
     );
     logger.info(
-      `[realtor] Fetch mode: Oxylabs render:html + javascript:true + force_headers:true\n` +
-      `[realtor] Estimates: ${FETCH_ESTIMATES ? `enabled (concurrency=${DETAIL_CONCURRENCY})` : "disabled"}`
+      `[realtor] Oxylabs | render:html | ` +
+      `residential:${USE_RESIDENTIAL} | ` +
+      `timeout:${REQUEST_TIMEOUT_MS / 1_000}s | retries:${MAX_RETRIES} | ` +
+      `fetchEstimates:${FETCH_ESTIMATES}`
     );
 
     if (!OXYLABS_USERNAME || !OXYLABS_PASSWORD) {
-      logger.error(
-        "[realtor] OXYLABS_USERNAME / OXYLABS_PASSWORD not set — add to .env"
-      );
+      logger.error("[realtor] OXYLABS_USERNAME / OXYLABS_PASSWORD not set — add to .env");
     }
   }
 
@@ -583,7 +657,11 @@ export class RealtorScraper extends BaseScraper {
         let pageListings: RawListing[] = [];
         try {
           pageListings = await this.scrapeOnePage(baseUrl, page);
-        } catch (err) {
+        } catch (err: any) {
+          if (err?.message === "OXYLABS_AUTH_FAILED") {
+            logger.error("[realtor] Auth failed — aborting");
+            return this.results;
+          }
           logger.error(`[realtor] Page ${page} error: ${err}`);
           break;
         }
@@ -591,7 +669,7 @@ export class RealtorScraper extends BaseScraper {
         logger.info(`[realtor] Page ${page}: ${pageListings.length} raw listing(s)`);
         this.allListings.push(...pageListings);
 
-        await attachEstimates(pageListings, this.sessionId);
+        await attachEstimates(pageListings);
 
         for (const listing of pageListings) {
           if (this.results.length >= this.options.maxListings) break;
@@ -606,7 +684,7 @@ export class RealtorScraper extends BaseScraper {
           }
           if (!this.passesFilter(listing)) {
             rejected.push({ listing, reason: "filtered" });
-            logger.debug(`[realtor] ✗ ${listing.address} @ ${listing.price}`);
+            logger.debug(`[realtor] ✗ Filtered: ${listing.address} @ ${listing.price}`);
             continue;
           }
 
@@ -640,6 +718,7 @@ export class RealtorScraper extends BaseScraper {
     const withEstimate = this.results.filter(
       (l) => (l as any).zestimate != null
     ).length;
+
     logger.info(
       `[realtor] Finished — ${this.results.length} accepted, ` +
       `${rejected.length} rejected | ` +
@@ -672,7 +751,7 @@ export class RealtorScraper extends BaseScraper {
     const pageUrl = buildPageUrl(baseUrl, pageNumber);
     logger.info(`[realtor] Fetching → ${pageUrl}`);
 
-    const html = await oxylabsFetch(pageUrl, this.sessionId);
+    const html = await oxylabsFetch(pageUrl);
     if (!html) {
       logger.warn(`[realtor] No HTML for page ${pageNumber} — stopping`);
       this.stopPaging = true;
@@ -687,16 +766,21 @@ export class RealtorScraper extends BaseScraper {
       saveFile(`realtor_html_p${pageNumber}_${slug}.html`, html);
     }
 
-    const { blocked, reason } = detectBlock(html);
-    if (blocked) {
-      logger.error(`[realtor] Blocked on page ${pageNumber}: ${reason}`);
+    const title = html.match(/<title[^>]*>([^<]+)/i)?.[1]?.trim() ?? "";
+
+    if (isActuallyBlocked(html, title)) {
+      logger.error(`[realtor] Blocked on page ${pageNumber}`);
       saveFile(`realtor_blocked_p${pageNumber}.html`, html);
       this.stopPaging = true;
       return [];
     }
 
     if (!html.includes("__NEXT_DATA__")) {
-      logger.error(`[realtor] No __NEXT_DATA__ on page ${pageNumber}`);
+      logger.warn(
+        `[realtor] No __NEXT_DATA__ on page ${pageNumber}.\n` +
+        `  Title: "${title}" | Length: ${html.length}\n` +
+        `  Saved to logs/realtor_no_nextdata_p${pageNumber}.html`
+      );
       saveFile(`realtor_no_nextdata_p${pageNumber}.html`, html);
       this.stopPaging = true;
       return [];
@@ -730,12 +814,12 @@ export class RealtorScraper extends BaseScraper {
     }
 
     logger.info(
-      `[realtor] Page ${pageNumber}: ${listings.length} listing(s) within ` +
-      `${MAX_DAYS_OLD}d` +
+      `[realtor] Page ${pageNumber}: ${listings.length} listing(s) within ${MAX_DAYS_OLD}d` +
       (allStale ? " — all stale" : "")
     );
 
     if (allStale) this.stopPaging = true;
+
     return listings.map((l) => ({ ...l, source: this.sourceName }));
   }
 
@@ -743,7 +827,7 @@ export class RealtorScraper extends BaseScraper {
     if (this.stopPaging)                                  return false;
     if (last.length === 0)                                return false;
     if (page >= this.options.maxPages)                    return false;
-    if (this.knownPages > 0 && page >= this.knownPages)  return false;
+    if (this.knownPages > 0 && page >= this.knownPages)   return false;
     return true;
   }
 

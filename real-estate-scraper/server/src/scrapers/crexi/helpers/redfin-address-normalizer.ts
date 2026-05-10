@@ -79,7 +79,7 @@ function formatAddress(components: AddressComponents): string {
 /**
  * Normalizes Crexi listing to Redfin address format
  */
-export function normalizeToRedfnFormat(listing: CrexiListing): string {
+export function normalizeToRedfinFormat(listing: CrexiListing): string {
   const components = extractAddressComponents(listing);
   return formatAddress(components);
 }

@@ -1,6 +1,7 @@
 // src/runner.ts
 import { RawListing, ListingUpsertPayload, DealScore } from "./types/listing";
 import { upsertMany, upsertZillowListings, upsertRedfinListings, upsertRealtorListings, upsertPropwireListings, getSummaryStats } from "./db/repository";
+import { enrichListingsBySource } from "./services/enrichment";
 import { logger } from "./utils/logger";
 
 
@@ -81,6 +82,17 @@ export async function runScrapers(options: RunOptions): Promise<void> {
 
       totalSaved += payloads.length;
       logger.info(`[${key}] Saved ${payloads.length} listings to DB`);
+
+      // ── ENRICHMENT PHASE: Normalize addresses and match against reference tables
+      logger.info(`[${key}] Starting enrichment phase...`);
+      try {
+        const stats = await enrichListingsBySource(key);
+        logger.info(
+          `[${key}] Enrichment complete: ${stats.linked} linked, ${stats.estimatesCreated} estimates created, ${stats.skipped} skipped, ${stats.failed} failed in ${stats.duration_ms}ms`
+        );
+      } catch (enrichErr) {
+        logger.error(`[${key}] Enrichment failed: ${enrichErr}`);
+      }
     } catch (err) {
       logger.error(`[${key}] DB save failed: ${err}`);
     }

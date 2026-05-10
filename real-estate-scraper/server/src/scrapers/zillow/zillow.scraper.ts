@@ -1,16 +1,30 @@
 // src/scrapers/zillow/zillow.scraper.ts
 //
-// Changes in this revision:
-//   1. Raw HTML from Oxylabs saved to logs/zillow_html_p<N>.html for every
-//      page — open this in a browser to find where the Zestimate lives.
-//   2. __NEXT_DATA__ JSON saved to logs/zillow_json_p<N>.json — grep for
-//      "zestimate" to see exactly which fields Zillow populates.
-//   3. isRelevant() is bypassed for Zillow. Results are already geo+price
-//      filtered at the URL level — keyword filtering adds nothing and was
-//      discarding every listing.
-//   4. ALL listings (including those that fail passesFilter) are collected
-//      and written to logs/zillow.json so nothing is silently dropped.
-//   5. Price field now arrives as a number (fixed in parser).
+// Off-market refactor — what changed:
+//
+//   1. Multi-market loop: scraper now iterates config.sources.zillow.markets[]
+//      (one entry per state × listing-type combination) exactly like Redfin/
+//      Propwire do. The old single-string baseUrl is gone.
+//
+//   2. buildPageUrl() sets filterState flags to target ONLY off-market types:
+//        fore=true / pf=false  → bank-owned REO / foreclosure
+//        pf=true   / fore=false → pre-foreclosure
+//      All on-market types (fsba, fsbo, nc, cmsn, auc) are disabled.
+//
+//   3. passesFilterOffMarket() replaces the inherited passesFilter():
+//        - ZESTIMATE REQUIRED: all stored listings must have a Zestimate value.
+//        - Price is optional; pre-foreclosures frequently have no list price.
+//        - Falls back to zestimate for the min/max range check.
+//
+//   4. listingType is stamped onto every RawListing so the scorer/DB can
+//      distinguish "pre_foreclosure" from "foreclosure" at a glance.
+//
+//   5. visited set is shared across markets so cross-market duplicates
+//      (same zpid appearing in both OH pre-foreclosure and OH foreclosure)
+//      are deduplicated automatically.
+//
+//   6. Per-market debug files: zillow_html_p1_ohio_pre_foreclosure.html etc.
+//      so logs stay organised when running multiple markets.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as https from "https";
@@ -35,11 +49,98 @@ const OXYLABS_PASSWORD   = process.env.OXYLABS_PASSWORD ?? "";
 
 const REQUEST_TIMEOUT_MS = 120_000;
 const BETWEEN_PAGE_MS    = 3_000;
-const MAX_PAGES          = 20;
+const BETWEEN_MARKET_MS  = 5_000;   // extra pause between markets
+const DEBUG_PAGES        = 3;       // save raw HTML/JSON for first N pages per market
 
-// Save HTML/JSON for the first N pages only — enough to inspect Zestimate
-// location without filling disk. Set to 0 to disable.
-const DEBUG_PAGES = 3;
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export type OffMarketType = "pre_foreclosure" | "foreclosure";
+
+interface MarketConfig {
+  name:        string;
+  baseUrl:     string;
+  listingType: OffMarketType;
+}
+
+// ── URL builder ───────────────────────────────────────────────────────────────
+//
+// Zillow filterState flag reference:
+//   fsba  — for sale by agent    → false  (exclude all on-market)
+//   fsbo  — for sale by owner    → false
+//   nc    — new construction     → false
+//   cmsn  — coming soon          → false
+//   auc   — auctions             → false  (separate workflow if needed)
+//   fore  — bank-owned / REO     → true   when listingType === "foreclosure"
+//   pf    — pre-foreclosure      → true   when listingType === "pre_foreclosure"
+//
+// Zillow's UI only allows one of fore/pf active at a time — we honour that by
+// having separate market entries per type rather than combining them.
+
+function buildPageUrl(
+  baseUrl:     string,
+  listingType: OffMarketType,
+  pageNumber:  number
+): string {
+  const [basePath] = baseUrl.split("?");
+
+  const filterState: Record<string, any> = {
+    price: { max: config.filter.maxPrice },
+    // Disable every on-market listing type
+    fsba: { value: false },
+    fsbo: { value: false },
+    nc:   { value: false },
+    cmsn: { value: false },
+    auc:  { value: false },
+    // Enable exactly the requested off-market type
+    fore: { value: listingType === "foreclosure" },
+    pf:   { value: listingType === "pre_foreclosure" },
+  };
+
+  const state: Record<string, any> = {
+    filterState,
+    sortSelection: { value: "days" },
+  };
+
+  if (pageNumber > 1) state.pagination = { currentPage: pageNumber };
+
+  return `${basePath}?searchQueryState=${encodeURIComponent(JSON.stringify(state))}`;
+}
+
+// ── Off-market listing filter ─────────────────────────────────────────────────
+//
+// Key differences vs the inherited passesFilter():
+//
+//   1. ZESTIMATE REQUIRED: Only listings with a Zestimate are accepted.
+//      This ensures all stored listings have an estimate value for enrichment.
+//
+//   2. Price is OPTIONAL.  Pre-foreclosures on Zillow often have no list price
+//      — only a loan balance or nothing.  We fall back to zestimate for the
+//      range check rather than rejecting the listing outright.
+//
+//   3. We still require url + address for deduplication and downstream use.
+
+function passesFilterOffMarket(listing: RawListing): boolean {
+  if (!listing.url)     return false;
+  if (!listing.address) return false;
+
+  // ZESTIMATE REQUIRED
+  const zestimate = (listing as any).zestimate;
+  if (zestimate == null) return false;
+
+  // Check price range (use zestimate since price may be null)
+  const effectivePrice = listing.price ?? zestimate;
+
+  if (effectivePrice < config.filter.minPrice) return false;
+  if (effectivePrice > config.filter.maxPrice) return false;
+
+  return true;
+}
+
+// ── Slug helper ───────────────────────────────────────────────────────────────
+
+function marketSlug(market: MarketConfig): string {
+  return market.name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+}
 
 // ── Oxylabs HTTP client ───────────────────────────────────────────────────────
 
@@ -111,8 +212,8 @@ function oxylabsFetch(targetUrl: string, sessionId?: string): Promise<string | n
           const raw    = Buffer.concat(chunks).toString("utf-8");
           const status = res.statusCode ?? 0;
 
-          if (status === 401) { logger.error("[zillow] Oxylabs 401"); resolve(null); return; }
-          if (status === 429) { logger.warn("[zillow] Oxylabs 429");  resolve(null); return; }
+          if (status === 401) { logger.error("[zillow] Oxylabs 401 — bad credentials"); resolve(null); return; }
+          if (status === 429) { logger.warn("[zillow] Oxylabs 429 — rate limited");      resolve(null); return; }
           if (status !== 200) {
             logger.warn(`[zillow] Oxylabs HTTP ${status}`);
             logger.debug(`[zillow] Body snippet: ${raw.slice(0, 300)}`);
@@ -177,29 +278,37 @@ function extractNextData(html: string): any | null {
 
 // ── Block detection ───────────────────────────────────────────────────────────
 
-const BLOCK_TITLES       = ["access to this page has been denied","access denied","attention required","just a moment","security check"];
-const BLOCK_BODY_SIGNALS = ['id="px-captcha"','id="_pxCaptcha"',"challenges.cloudflare.com","cf-browser-verification","errors.edgesuite.net","Enable JavaScript and cookies to continue","Verifying you are human. Please stand by"];
+const BLOCK_TITLES = [
+  "access to this page has been denied",
+  "access denied",
+  "attention required",
+  "just a moment",
+  "security check",
+];
+
+const BLOCK_BODY_SIGNALS = [
+  'id="px-captcha"',
+  'id="_pxCaptcha"',
+  "challenges.cloudflare.com",
+  "cf-browser-verification",
+  "errors.edgesuite.net",
+  "Enable JavaScript and cookies to continue",
+  "Verifying you are human. Please stand by",
+];
 
 function detectBlock(html: string): { blocked: boolean; reason: string } {
   const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "").toLowerCase().trim();
-  if (BLOCK_TITLES.some(t => title.includes(t)))          return { blocked: true, reason: `block title: "${title}"` };
+  if (BLOCK_TITLES.some(t => title.includes(t)))
+    return { blocked: true, reason: `block title: "${title}"` };
+
   const sig = BLOCK_BODY_SIGNALS.find(s => html.includes(s));
-  if (sig)                                                 return { blocked: true, reason: `body signal: ${sig}` };
+  if (sig)
+    return { blocked: true, reason: `body signal: ${sig}` };
+
   if (html.length < 3_000 && !html.includes("__NEXT_DATA__") && !html.includes("zillowstatic.com"))
-                                                           return { blocked: true, reason: `too short (${html.length} chars)` };
+    return { blocked: true, reason: `too short (${html.length} chars)` };
+
   return { blocked: false, reason: "" };
-}
-
-// ── URL builder ───────────────────────────────────────────────────────────────
-
-function buildPageUrl(baseUrl: string, pageNumber: number): string {
-  const [basePath] = baseUrl.split("?");
-  const state: Record<string, any> = {
-    filterState:   { price: { max: 300_000 } },
-    sortSelection: { value: "days" },
-  };
-  if (pageNumber > 1) state.pagination = { currentPage: pageNumber };
-  return `${basePath}?searchQueryState=${encodeURIComponent(JSON.stringify(state))}`;
 }
 
 // ── File helpers ──────────────────────────────────────────────────────────────
@@ -225,102 +334,122 @@ function saveFile(filename: string, content: string): void {
 export class ZillowScraper extends BaseScraper {
   readonly sourceName = "zillow";
 
-  private readonly baseUrl:   string;
-  private stopPaging = false;
-  private readonly sessionId = `zillow_${Date.now()}_${Math.floor(Math.random() * 9_999)}`;
-
-  // Accumulate ALL listings across pages regardless of filter outcome
+  // visited is inherited from BaseScraper and shared across all markets
+  // so we automatically deduplicate the same zpid appearing in multiple markets.
   private allListings: RawListing[] = [];
+  private readonly sessionId = `zillow_${Date.now()}_${Math.floor(Math.random() * 9_999)}`;
 
   constructor(options: ScraperOptions = {}) {
     super(options);
-    this.baseUrl = String(config.sources.zillow);
   }
 
-  // ── Override run() — no Playwright, no isRelevant() filter ───────────────
-  //
-  // Zillow results are already filtered by price (≤ $300k) and geography at
-  // the URL level.  Applying the keyword-based isRelevant() check on top of
-  // that discards every single listing because residential addresses don't
-  // contain words like "motivated seller" or "as-is". We skip it here and
-  // accept every listing that passes the price/location passesFilter() check.
+  // ── run() — iterates every market in config.sources.zillow.markets ────────
 
   override async run(): Promise<RawListing[]> {
-    logger.info(`[${this.sourceName}] Starting scrape (Oxylabs — no local browser)`);
+    logger.info(`[${this.sourceName}] Starting off-market scrape (Oxylabs)`);
+
     this.visited.clear();
     this.results     = [];
     this.allListings = [];
-    this.stopPaging  = false;
+
+    const zillowCfg = config.sources.zillow;
+    const markets   = zillowCfg.markets;
 
     const rejected: Array<{ listing: RawListing; reason: string }> = [];
 
-    for (let page = 1; page <= this.options.maxPages; page++) {
+    for (const market of markets) {
       if (this.results.length >= this.options.maxListings) {
-        logger.info(`[${this.sourceName}] maxListings (${this.options.maxListings}) reached`);
+        logger.info(`[${this.sourceName}] maxListings (${this.options.maxListings}) reached — stopping`);
         break;
       }
 
-      logger.info(`[${this.sourceName}] Scraping page ${page}`);
+      logger.info(`[${this.sourceName}] ── Market: ${market.name} (${market.listingType}) ──`);
 
-      let pageListings: RawListing[] = [];
-      try {
-        pageListings = await this.scrapePage(null as any, page);
-      } catch (err) {
-        logger.error(`[${this.sourceName}] Page ${page} error: ${err}`);
-        continue;
-      }
+      let stopPaging = false;
 
-      logger.info(`[${this.sourceName}] Page ${page}: ${pageListings.length} raw listings`);
-
-      // Track every listing for the full JSON output
-      this.allListings.push(...pageListings);
-
-      for (const listing of pageListings) {
+      for (let page = 1; page <= zillowCfg.maxPagesPerMarket; page++) {
+        if (stopPaging)                                    break;
         if (this.results.length >= this.options.maxListings) break;
 
-        if (!listing.url) {
-          rejected.push({ listing, reason: "no_url" }); continue;
-        }
-        if (this.visited.has(listing.url)) {
-          rejected.push({ listing, reason: "already_seen" }); continue;
-        }
+        logger.info(`[${this.sourceName}] ${market.name} — page ${page}/${zillowCfg.maxPagesPerMarket}`);
 
-        // passesFilter checks price range and location — keep this.
-        // isRelevant() (keyword check) is intentionally NOT called here.
-        if (!this.passesFilter(listing)) {
-          rejected.push({ listing, reason: "filtered" });
-          logger.debug(`[${this.sourceName}] ✗ Filtered: ${listing.address} @ ${listing.price}`);
+        let pageListings: RawListing[] = [];
+        try {
+          const result = await this.scrapeMarketPage(market, page);
+          pageListings = result.listings;
+          if (result.stop) stopPaging = true;
+        } catch (err) {
+          logger.error(`[${this.sourceName}] ${market.name} page ${page} error: ${err}`);
           continue;
         }
 
-        this.visited.add(listing.url);
-        this.results.push(listing);
-        logger.info(
-          `[${this.sourceName}] ✓ [${this.results.length}/${this.options.maxListings}] ` +
-          `${listing.address ?? listing.title} @ $${listing.price?.toLocaleString()} ` +
-          (listing.zestimate ? `| Zestimate $${listing.zestimate.toLocaleString()}` : "| no Zestimate")
-        );
+        logger.info(`[${this.sourceName}] ${market.name} page ${page}: ${pageListings.length} raw listing(s)`);
+
+        this.allListings.push(...pageListings);
+
+        for (const listing of pageListings) {
+          if (this.results.length >= this.options.maxListings) break;
+
+          if (!listing.url) {
+            rejected.push({ listing, reason: "no_url" }); continue;
+          }
+          if (this.visited.has(listing.url)) {
+            rejected.push({ listing, reason: "already_seen" }); continue;
+          }
+
+          // Use off-market-aware filter (tolerates missing price)
+          if (!passesFilterOffMarket(listing)) {
+            rejected.push({ listing, reason: "filtered" });
+            logger.debug(
+              `[${this.sourceName}] ✗ Filtered: ${listing.address} ` +
+              `@ ${listing.price ?? "no price"} (zestimate: ${(listing as any).zestimate ?? "none"})`
+            );
+            continue;
+          }
+
+          this.visited.add(listing.url);
+          this.results.push(listing);
+          logger.info(
+            `[${this.sourceName}] ✓ [${this.results.length}/${this.options.maxListings}] ` +
+            `[] ${listing.address ?? listing.title} ` +
+            `@ ${listing.price != null ? "$" + listing.price.toLocaleString() : "no price"} ` +
+            ((listing as any).zestimate ? `| Zestimate $${(listing as any).zestimate.toLocaleString()}` : "| no Zestimate")
+          );
+        }
+
+        if (pageListings.length === 0) {
+          logger.info(`[${this.sourceName}] ${market.name} — no listings on page ${page}, stopping`);
+          break;
+        }
+
+        await sleep(jitter(BETWEEN_PAGE_MS));
       }
 
-      if (!this.hasMorePages(page, pageListings)) {
-        logger.info(`[${this.sourceName}] No more pages`);
-        break;
-      }
+      logger.info(
+        `[${this.sourceName}] ${market.name} done — ` +
+        `${this.results.length} total accepted so far`
+      );
 
-      await sleep(jitter(BETWEEN_PAGE_MS));
+      // Pause between markets to avoid hammering Oxylabs
+      if (markets.indexOf(market) < markets.length - 1) {
+        await sleep(jitter(BETWEEN_MARKET_MS));
+      }
     }
 
-    logger.info(`[${this.sourceName}] Finished — ${this.results.length} accepted, ${rejected.length} rejected`);
+    logger.info(
+      `[${this.sourceName}] Finished all markets — ` +
+      `${this.results.length} accepted, ${rejected.length} rejected`
+    );
 
-    // Write full JSON including ALL listings and rejected ones
+    // Write full debug JSON
     saveFile(
       `${this.sourceName}.json`,
       JSON.stringify(
         {
-          accepted:     this.results,
+          accepted:    this.results,
           rejected,
-          allListings:  this.allListings,   // every listing regardless of filter
-          generatedAt:  new Date().toISOString(),
+          allListings: this.allListings,
+          generatedAt: new Date().toISOString(),
         },
         null,
         2
@@ -330,78 +459,84 @@ export class ZillowScraper extends BaseScraper {
     return this.results;
   }
 
-  // ── scrapePage ────────────────────────────────────────────────────────────
+  // ── scrapeMarketPage ──────────────────────────────────────────────────────
 
-  protected async scrapePage(_handle: any, pageNumber: number): Promise<RawListing[]> {
-    if (this.stopPaging) return [];
+  private async scrapeMarketPage(
+    market:     MarketConfig,
+    pageNumber: number
+  ): Promise<{ listings: RawListing[]; stop: boolean }> {
 
-    const pageUrl = buildPageUrl(this.baseUrl, pageNumber);
-    logger.info(`[zillow] Page ${pageNumber}/${MAX_PAGES} → ${pageUrl}`);
+    const pageUrl = buildPageUrl(market.baseUrl, market.listingType, pageNumber);
+    const slug    = marketSlug(market);
+
+    logger.info(`[zillow] ${market.name} page ${pageNumber} → ${pageUrl}`);
 
     const html = await oxylabsFetch(pageUrl, this.sessionId);
     if (!html) {
-      logger.warn(`[zillow] No HTML for page ${pageNumber} — stopping`);
-      this.stopPaging = true;
-      return [];
+      logger.warn(`[zillow] No HTML for ${market.name} page ${pageNumber} — stopping market`);
+      return { listings: [], stop: true };
     }
 
-    // ── Save raw HTML for inspection ──────────────────────────────────────
-    // Open logs/zillow_html_p1.html in your browser to see the rendered page.
-    // Search for "zestimate" to find where Zillow puts the value in the markup.
     if (pageNumber <= DEBUG_PAGES) {
-      saveFile(`zillow_html_p${pageNumber}.html`, html);
+      saveFile(`zillow_html_p${pageNumber}_${slug}.html`, html);
     }
 
     const { blocked, reason } = detectBlock(html);
     if (blocked) {
-      logger.error(`[zillow] Blocked on page ${pageNumber}: ${reason}`);
-      saveFile(`zillow_blocked_p${pageNumber}.html`, html);
-      this.stopPaging = true;
-      return [];
+      logger.error(`[zillow] Blocked on ${market.name} page ${pageNumber}: ${reason}`);
+      saveFile(`zillow_blocked_p${pageNumber}_${slug}.html`, html);
+      return { listings: [], stop: true };
     }
 
     if (!html.includes("zillowstatic.com") && !html.includes("__NEXT_DATA__")) {
-      logger.error(`[zillow] Page ${pageNumber} doesn't look like Zillow`);
-      saveFile(`zillow_unexpected_p${pageNumber}.html`, html);
-      this.stopPaging = true;
-      return [];
+      logger.error(`[zillow] ${market.name} page ${pageNumber} doesn't look like Zillow`);
+      saveFile(`zillow_unexpected_p${pageNumber}_${slug}.html`, html);
+      return { listings: [], stop: true };
     }
 
     const json = extractNextData(html);
     if (!json) {
-      logger.warn(`[zillow] No __NEXT_DATA__ on page ${pageNumber}`);
-      saveFile(`zillow_no_next_data_p${pageNumber}.html`, html);
-      this.stopPaging = true;
-      return [];
+      logger.warn(`[zillow] No __NEXT_DATA__ on ${market.name} page ${pageNumber}`);
+      saveFile(`zillow_no_next_data_p${pageNumber}_${slug}.html`, html);
+      return { listings: [], stop: true };
     }
 
-    // ── Save the raw __NEXT_DATA__ JSON ───────────────────────────────────
-    // Run:  grep -i "zestimate" logs/zillow_json_p1.json
-    // to see every field name containing "zestimate" and its value.
     if (pageNumber <= DEBUG_PAGES) {
-      saveFile(`zillow_json_p${pageNumber}.json`, JSON.stringify(json, null, 2));
+      saveFile(`zillow_json_p${pageNumber}_${slug}.json`, JSON.stringify(json, null, 2));
     }
 
     const searchJson             = json?.props?.pageProps?.searchPageState ?? json;
     const { listings, allStale } = parseZillowResults(searchJson);
 
     logger.info(
-      `[zillow] Page ${pageNumber}: ${listings.length} listing(s) within ${MAX_DAYS_OLD} days` +
+      `[zillow] ${market.name} page ${pageNumber}: ` +
+      `${listings.length} listing(s) within ${MAX_DAYS_OLD} days` +
       (allStale ? " — all stale" : "")
     );
 
-    // Log Zestimate hit rate for this page
     const withZestimate = listings.filter(l => (l as any).zestimate != null).length;
-    logger.info(`[zillow] Page ${pageNumber}: ${withZestimate}/${listings.length} listings have a Zestimate`);
+    logger.info(
+      `[zillow] ${market.name} page ${pageNumber}: ` +
+      `${withZestimate}/${listings.length} listings have a Zestimate`
+    );
 
-    if (allStale) this.stopPaging = true;
-    return listings.map(l => ({ ...l, source: this.sourceName }));
+    // Stamp listingType onto every result so the scorer/DB knows what it is
+    const stamped = listings.map(l => ({
+      ...l,
+      source:      this.sourceName,
+      listingType: market.listingType,
+    }));
+
+    return { listings: stamped, stop: allStale };
   }
 
-  protected hasMorePages(pageNumber: number, lastPageResults: RawListing[]): boolean {
-    if (this.stopPaging)              return false;
-    if (pageNumber >= MAX_PAGES)      return false;
-    if (lastPageResults.length === 0) return false;
-    return true;
+  // scrapePage is not used in this override-based scraper but must satisfy
+  // the abstract base class contract.
+  protected async scrapePage(_handle: any, _pageNumber: number): Promise<RawListing[]> {
+    return [];
+  }
+
+  protected hasMorePages(_pageNumber: number, lastPageResults: RawListing[]): boolean {
+    return lastPageResults.length > 0;
   }
 }

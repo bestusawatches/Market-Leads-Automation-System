@@ -83,7 +83,8 @@ function normalisePropertyType(raw: string | undefined): PropertyType {
  * Parse a price string into a whole-number dollar amount.
  * Handles: "$1.2M", "$750K", "$1,200,000", "1200000"
  * Returns undefined for "Contact for Pricing", "Price Upon Request", etc.
- */
+*/
+
 function extractPriceFromText(text: string): number | undefined {
   if (!text) return undefined;
 

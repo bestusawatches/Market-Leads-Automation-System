@@ -4,6 +4,7 @@ import type {
   ListingsPayload,
   PropertiesPayload,
   SavedFilter,
+  SourceListingsPayload,
 } from "./types";
 
 const API_BASE_URL = "http://localhost:3005/api/v1";
@@ -41,6 +42,30 @@ function buildUrl(path: string, query?: Record<string, string | number | null | 
 export async function getAllListings(limit = 1000): Promise<ListingsPayload> {
   const url = buildUrl("/listings", { limit });
   const response = await fetchJson<ApiResponse<ListingsPayload>>(url);
+  return response.data;
+}
+
+export async function getZillowListings(limit = 1000): Promise<SourceListingsPayload> {
+  const url = buildUrl("/listings/zillow", { limit });
+  const response = await fetchJson<ApiResponse<SourceListingsPayload>>(url);
+  return response.data;
+}
+
+export async function getRedfinListings(limit = 1000): Promise<SourceListingsPayload> {
+  const url = buildUrl("/listings/redfin", { limit });
+  const response = await fetchJson<ApiResponse<SourceListingsPayload>>(url);
+  return response.data;
+}
+
+export async function getRealtorListings(limit = 1000): Promise<SourceListingsPayload> {
+  const url = buildUrl("/listings/realtor", { limit });
+  const response = await fetchJson<ApiResponse<SourceListingsPayload>>(url);
+  return response.data;
+}
+
+export async function getPropwireListings(limit = 1000): Promise<SourceListingsPayload> {
+  const url = buildUrl("/listings/propwire", { limit });
+  const response = await fetchJson<ApiResponse<SourceListingsPayload>>(url);
   return response.data;
 }
 

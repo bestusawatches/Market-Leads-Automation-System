@@ -4,7 +4,11 @@ import {
   getAllListingsHandler,
   updateFilterHandler,
   getFilterHandler,
-  triggerScrapeHandler
+  triggerScrapeHandler,
+  getZillowListingsHandler,
+  getRedfinListingsHandler,
+  getRealtorListingsHandler,
+  getPropwireListingsHandler
 } from "./handlers";
 
 const router = Router();
@@ -335,5 +339,112 @@ router.get("/filters", getFilterHandler);
  *         description: Internal server error
  */
 router.post("/scrape/trigger", triggerScrapeHandler);
+
+/**
+ * @swagger
+ * /listings/zillow:
+ *   get:
+ *     tags:
+ *       - Listings
+ *     summary: Get Zillow listings from source table
+ *     description: Retrieve raw Zillow listings directly from the ZillowListing table (unenriched)
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 1000
+ *         description: Maximum number of listings to return (max 10000)
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved Zillow listings
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     count:
+ *                       type: integer
+ *                     listings:
+ *                       type: array
+ *       500:
+ *         description: Internal server error
+ */
+router.get("/listings/zillow", getZillowListingsHandler);
+
+/**
+ * @swagger
+ * /listings/redfin:
+ *   get:
+ *     tags:
+ *       - Listings
+ *     summary: Get Redfin listings from source table
+ *     description: Retrieve raw Redfin listings directly from the RedfinListing table (unenriched)
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 1000
+ *         description: Maximum number of listings to return (max 10000)
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved Redfin listings
+ *       500:
+ *         description: Internal server error
+ */
+router.get("/listings/redfin", getRedfinListingsHandler);
+
+/**
+ * @swagger
+ * /listings/realtor:
+ *   get:
+ *     tags:
+ *       - Listings
+ *     summary: Get Realtor listings from source table
+ *     description: Retrieve raw Realtor listings directly from the RealtorListing table (unenriched)
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 1000
+ *         description: Maximum number of listings to return (max 10000)
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved Realtor listings
+ *       500:
+ *         description: Internal server error
+ */
+router.get("/listings/realtor", getRealtorListingsHandler);
+
+/**
+ * @swagger
+ * /listings/propwire:
+ *   get:
+ *     tags:
+ *       - Listings
+ *     summary: Get Propwire listings from source table
+ *     description: Retrieve raw Propwire listings directly from the PropwireListing table (unenriched)
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 1000
+ *         description: Maximum number of listings to return (max 10000)
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved Propwire listings
+ *       500:
+ *         description: Internal server error
+ */
+router.get("/listings/propwire", getPropwireListingsHandler);
 
 export default router;

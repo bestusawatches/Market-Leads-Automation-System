@@ -94,6 +94,7 @@ export interface Property {
   id: string;
   normalizedAddress?: string;
   address?: string;
+  url?: string;
   city?: string;
   state?: string;
   zip?: string;
@@ -101,6 +102,8 @@ export interface Property {
   longitude?: number;
   listings: PropertyListing[];
   estimates: PropertyEstimate[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ListingsPayload {
@@ -149,4 +152,94 @@ export interface UseScrapeReturn {
   lastTriggeredAt: string | null;
   trigger: (source: string) => Promise<void>;
   reset: () => void;
+}
+
+// Source-specific listing types
+export interface ZillowListing {
+  id: string;
+  url: string;
+  title?: string;
+  price?: number;
+  address?: string;
+  location?: string;
+  propertyType?: string;
+  postedDate?: string;
+  description?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  squareFeet?: number;
+  zestimate?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
+export interface RedfinListing {
+  id: string;
+  url: string;
+  title?: string;
+  price?: number;
+  address?: string;
+  location?: string;
+  propertyType?: string;
+  postedDate?: string;
+  description?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  squareFeet?: number;
+  estimate?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
+export interface RealtorListing {
+  id: string;
+  url: string;
+  title?: string;
+  price?: number;
+  address?: string;
+  location?: string;
+  propertyType?: string;
+  postedDate?: string;
+  description?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  squareFeet?: number;
+  estimate?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
+export interface PropwireListing {
+  id: string;
+  url: string;
+  title?: string;
+  price?: number;
+  address?: string;
+  location?: string;
+  propertyType?: string;
+  postedDate?: string;
+  description?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  squareFeet?: number;
+  estimate?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
+export type SourceListing = ZillowListing | RedfinListing | RealtorListing | PropwireListing;
+
+export interface SourceListingsPayload {
+  count: number;
+  listings: SourceListing[];
+}
+
+export interface SourceListingsResponse {
+  status: "ok" | "error";
+  data: SourceListingsPayload;
+  message?: string;
 }

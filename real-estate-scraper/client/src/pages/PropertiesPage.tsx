@@ -17,7 +17,10 @@ interface UnifiedListing {
   price?: number;
   url?: string;
   source: string;
-  estimate?: number;
+  zestimate?: number;
+  redfinEstimate?: number;
+  propwireEstimate?: number;
+  realtorEstimate?: number;
   estimatedArv?: number; // After Repair Value (median estimate or individual estimate)
   arv?: number; // (price + 50000) / estimatedArv, rounded to 2 decimals
 }
@@ -92,11 +95,13 @@ export const PropertiesPage: React.FC = () => {
     properties.forEach((property) => {
       const estimatedArv = calculateMedian(property.estimates.map((est) => est.value));
       
+      // Map estimates by source
+      const estimatesBySource: { [key: string]: number } = {};
+      property.estimates.forEach((est) => {
+        estimatesBySource[est.source] = est.value;
+      });
+      
       property.listings.forEach((listing) => {
-        // Find matching estimate for this listing/source
-        const estimate = property.estimates.find(
-          (est) => est.source === listing.source
-        );
         const arv = calculateArv(listing.price, estimatedArv);
         listings.push({
           id: listing.id,
@@ -104,10 +109,14 @@ export const PropertiesPage: React.FC = () => {
           price: listing.price,
           url: listing.url,
           source: listing.source,
-          estimate: estimate?.value,
+          zestimate: estimatesBySource['zillow'],
+          redfinEstimate: estimatesBySource['redfin'],
+          propwireEstimate: estimatesBySource['propwire'],
+          realtorEstimate: estimatesBySource['realtor'],
           estimatedArv, // median of all estimates
           arv,
         });
+        
       });
     });
 
@@ -121,7 +130,10 @@ export const PropertiesPage: React.FC = () => {
         price: listing.price,
         url: listing.url,
         source: 'zillow',
-        estimate: listing.zestimate,
+        zestimate: listing.zestimate,
+        redfinEstimate: undefined,
+        propwireEstimate: undefined,
+        realtorEstimate: undefined,
         estimatedArv: listing.zestimate,
         arv,
       });
@@ -137,7 +149,10 @@ export const PropertiesPage: React.FC = () => {
         price: listing.price,
         url: listing.url,
         source: 'redfin',
-        estimate: listing.estimate,
+        zestimate: undefined,
+        redfinEstimate: listing.estimate,
+        propwireEstimate: undefined,
+        realtorEstimate: undefined,
         estimatedArv: listing.estimate,
         arv,
       });
@@ -153,7 +168,10 @@ export const PropertiesPage: React.FC = () => {
         price: listing.price,
         url: listing.url,
         source: 'realtor',
-        estimate: listing.estimate,
+        zestimate: undefined,
+        redfinEstimate: undefined,
+        propwireEstimate: undefined,
+        realtorEstimate: listing.estimate,
         estimatedArv: listing.estimate,
         arv,
       });
@@ -169,7 +187,10 @@ export const PropertiesPage: React.FC = () => {
         price: listing.price,
         url: listing.url,
         source: 'propwire',
-        estimate: listing.estimate,
+        zestimate: undefined,
+        redfinEstimate: undefined,
+        propwireEstimate: listing.estimate,
+        realtorEstimate: undefined,
         estimatedArv: listing.estimate,
         arv,
       });
@@ -221,7 +242,7 @@ export const PropertiesPage: React.FC = () => {
     <PageContainer>
       <Header
         title="All Listings"
-        subtitle="Unified view of all listings with address, price, source, estimate, estimated ARV, ARV, and URL"
+        subtitle="Unified view of all listings with address, price, source, zestimate, redfin estimate, propwire estimate, realtor estimate, estimated ARV, ARV, and URL"
       />
 
       <div className="p-8">
@@ -276,7 +297,10 @@ export const PropertiesPage: React.FC = () => {
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Address</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Price</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Source</th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Estimate</th>
+                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Zestimate</th>
+                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Redfin Estimate</th>
+                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Propwire Estimate</th>
+                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Realtor Estimate</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Estimated ARV</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">ARV</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">URL</th>
@@ -300,7 +324,16 @@ export const PropertiesPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-600 font-medium">
-                          {listing.estimate ? `$${listing.estimate.toLocaleString()}` : 'N/A'}
+                          {listing.zestimate ? `$${listing.zestimate.toLocaleString()}` : 'N/A'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
+                          {listing.redfinEstimate ? `$${listing.redfinEstimate.toLocaleString()}` : 'N/A'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
+                          {listing.propwireEstimate ? `$${listing.propwireEstimate.toLocaleString()}` : 'N/A'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
+                          {listing.realtorEstimate ? `$${listing.realtorEstimate.toLocaleString()}` : 'N/A'}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-600 font-medium">
                           {listing.estimatedArv ? `$${listing.estimatedArv.toLocaleString()}` : 'N/A'}

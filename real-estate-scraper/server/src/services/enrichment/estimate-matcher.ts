@@ -31,6 +31,7 @@ export async function findEstimateMatch(
         estimateSource,
         estimateValue: null,
         matchedAddress: null,
+        sourceListingId: null,
       };
     }
 

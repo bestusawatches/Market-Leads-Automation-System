@@ -17,8 +17,17 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // CORS middleware for frontend dev requests
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const allowedOrigin = process.env.CLIENT_ORIGIN || "http://localhost:3000";
-  res.header("Access-Control-Allow-Origin", allowedOrigin);
+  const allowedOrigins = [
+    "http://localhost:3000",
+    "https://market-leads-automation-system.vercel.app",
+    process.env.CLIENT_ORIGIN,
+  ].filter(Boolean);
+
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  }
+
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 

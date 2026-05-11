@@ -70,8 +70,28 @@ export const config = {
         { name: "Milwaukee, WI", state: "WI", stateName: "Wisconsin", city: "Milwaukee" },
       ] as Array<{ name: string; state: string; stateName: string; city?: string }>,
 
-      maxPages:      Number(process.env.PROPWIRE_MAX_PAGES     ?? 10),
-      detailLimit:   Number(process.env.PROPWIRE_DETAIL_LIMIT  ?? 20),
+      // ── Off-market lead types ────────────────────────────────────────────
+      //
+      // Default targets all five off-market signals. Override at runtime:
+      //   PROPWIRE_LEAD_TYPES=preforeclosure,absentee_owner
+      //
+      // Available values:
+      //   preforeclosure  — owner behind on mortgage / lis pendens filed
+      //   absentee_owner  — owner lives elsewhere (landlord or vacant)
+      //   vacant_home     — confirmed vacant / utility shutoff signals
+      //   high_equity     — estimated LTV < ~50% (motivated cash-out candidates)
+      //   free_and_clear  — no mortgage on record
+      //   for_sale        — MLS active (maps to mls_active; not off-market)
+      leadTypes: [
+        "preforeclosure",
+        "absentee_owner",
+        "vacant_home",
+        "high_equity",
+        "free_and_clear",
+      ] as string[],
+
+      maxPages:      Number(process.env.PROPWIRE_MAX_PAGES    ?? 10),
+      detailLimit:   Number(process.env.PROPWIRE_DETAIL_LIMIT ?? 20),
     },
 
     craigslist: {
@@ -81,25 +101,6 @@ export const config = {
       toledo:    "https://toledo.craigslist.org/search/rea",
     },
 
-    // ── Zillow — off-market only ───────────────────────────────────────────
-    //
-    // Each market entry targets one off-market listing type.
-    // listingType drives the filterState flags in buildPageUrl():
-    //
-    //   "pre_foreclosure"  →  pf=true,   fore=false
-    //   "foreclosure"      →  fore=true, pf=false
-    //
-    // fsba / fsbo / nc / cmsn / auc are all set to false in every request
-    // so Zillow returns ONLY the off-market type, no active MLS listings.
-    //
-    // To add cities: duplicate an entry and change baseUrl to the city path,
-    // e.g. "https://www.zillow.com/columbus-oh/" — Zillow accepts both state
-    // and city-level paths with the same searchQueryState override.
-    //
-    // Override page depth at runtime:
-    //   ZILLOW_MAX_PAGES=10   — pages scraped per market (default 20)
-    //   ZILLOW_DETAIL_LIMIT=5 — per-listing detail fetches for extra fields
-    //                           (0 = disabled, each fetch costs 1 Oxylabs credit)
     zillow: {
       markets: [
         {
@@ -129,8 +130,6 @@ export const config = {
       }>,
 
       maxPagesPerMarket: Number(process.env.ZILLOW_MAX_PAGES    ?? 20),
-      // Set > 0 to fetch each listing's detail page for loan balance,
-      // auction date, and other fields not present in search results.
       detailFetchLimit:  Number(process.env.ZILLOW_DETAIL_LIMIT ?? 0),
     },
 

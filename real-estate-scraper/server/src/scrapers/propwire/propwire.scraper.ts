@@ -40,12 +40,25 @@
 //   PROXY_URL=http://user:pass@host:port   ← residential proxy, bypasses DataDome
 //
 // ── Optional .env ─────────────────────────────────────────────────────────────
+//   PROPWIRE_LEAD_TYPES=preforeclosure,absentee_owner,vacant_home,high_equity,free_and_clear
+//     Override the lead types to scrape (comma-separated). Defaults to all five
+//     off-market signals defined in config.sources.propwire.leadTypes.
 //   PROPWIRE_SESSION_COOKIE=propwire_session=eyJ...
 //   PROPWIRE_XSRF_TOKEN=<value>
 //   OXYLABS_USERNAME / OXYLABS_PASSWORD
 //   PROPWIRE_MAX_PAGES=10
 //   PROPWIRE_PAGE_SIZE=50
-//   PROPWIRE_LEAD_TYPES=for_sale,preforeclosure
+//
+// ── Off-market lead type reference ───────────────────────────────────────────
+//
+//   preforeclosure  → owner behind on mortgage / lis pendens filed
+//   absentee_owner  → owner's mailing address differs from property address
+//   vacant_home     → confirmed or inferred vacancy signals
+//   high_equity     → estimated LTV < ~50% (motivated cash-out / quick-sale candidate)
+//   free_and_clear  → no open mortgage on record
+//
+//   (for_sale / mls_active kept in LEAD_TYPE_MAP for backward compat but not
+//    included in the default off-market set)
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -79,24 +92,51 @@ const PROXY_URL          = process.env.PROXY_URL               ?? "";
 const MAX_PAGES          = Number(process.env.PROPWIRE_MAX_PAGES  ?? 10);
 const PAGE_SIZE          = Number(process.env.PROPWIRE_PAGE_SIZE  ?? 50);
 
-// "for_sale" → "mls_active" (confirmed from DevTools request body)
+// ── Lead type mapping ─────────────────────────────────────────────────────────
+//
+// Maps human-friendly / env-var names → API filter strings accepted by
+// api.propwire.com/api/property_search lead_type_filters[].
+// for_sale / mls_active kept for backward compatibility.
+
 const LEAD_TYPE_MAP: Record<string, string> = {
-  for_sale:       "mls_active",
-  preforeclosure: "preforeclosure",
-  mls_active:     "mls_active",
-  mls_pending:    "mls_pending",
-  absentee_owner: "absentee_owner",
-  vacant_home:    "vacant_home",
-  high_equity:    "high_equity",
-  free_and_clear: "free_and_clear",
+  // Off-market signals (default targets)
+  preforeclosure:  "preforeclosure",
+  absentee_owner:  "absentee_owner",
+  vacant_home:     "vacant_home",
+  high_equity:     "high_equity",
+  free_and_clear:  "free_and_clear",
+  // MLS / on-market (not default, kept for compat)
+  for_sale:        "mls_active",
+  mls_active:      "mls_active",
+  mls_pending:     "mls_pending",
 };
 
-const RAW_LEAD_TYPES: string[] = (process.env.PROPWIRE_LEAD_TYPES ?? "for_sale")
-  .split(",").map((s) => s.trim()).filter(Boolean);
+// Resolve lead types: env var → config defaults → hard-coded fallback
+function resolveLeadTypes(): string[] {
+  // 1. Explicit env override
+  const fromEnv = (process.env.PROPWIRE_LEAD_TYPES ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  if (fromEnv.length > 0) return fromEnv.map((t) => LEAD_TYPE_MAP[t] ?? t)
+    .filter((v, i, a) => a.indexOf(v) === i);
 
-const API_LEAD_TYPE_FILTERS: string[] = RAW_LEAD_TYPES
-  .map((t) => LEAD_TYPE_MAP[t] ?? t)
-  .filter((v, i, a) => a.indexOf(v) === i);
+  // 2. Config-defined defaults (config.sources.propwire.leadTypes)
+  const fromConfig = (config.sources as any)?.propwire?.leadTypes as string[] | undefined;
+  if (fromConfig && fromConfig.length > 0) {
+    return fromConfig.map((t: string) => LEAD_TYPE_MAP[t] ?? t)
+      .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+  }
+
+  // 3. Hard-coded fallback (should never be reached)
+  return ["preforeclosure", "absentee_owner", "vacant_home", "high_equity", "free_and_clear"];
+}
+
+const API_LEAD_TYPE_FILTERS: string[] = resolveLeadTypes();
+
+// Human-readable label for logging (before mapping)
+const LEAD_TYPES_LABEL = (process.env.PROPWIRE_LEAD_TYPES ?? "")
+  .split(",").map((s) => s.trim()).filter(Boolean).join(", ")
+  || ((config.sources as any)?.propwire?.leadTypes as string[] | undefined)?.join(", ")
+  || "preforeclosure, absentee_owner, vacant_home, high_equity, free_and_clear";
 
 const API_ENDPOINT       = "api.propwire.com";
 const OXYLABS_HOST       = "realtime.oxylabs.io";
@@ -148,11 +188,6 @@ async function decompress(buf: Buffer, encoding: string): Promise<Buffer> {
 }
 
 // ── Proxy CONNECT tunnel ──────────────────────────────────────────────────────
-//
-// Opens an HTTP CONNECT tunnel through the proxy, then performs a TLS handshake
-// over the tunnel socket and sends the HTTPS request manually.
-// This is required because DataDome blocks datacenter IPs — the residential
-// proxy IP passes the bot check.
 
 async function httpsPostViaProxy(
   hostname:  string,
@@ -217,7 +252,6 @@ async function httpsPostViaProxy(
         return;
       }
 
-      // TLS handshake over the tunnel
       const tlsSocket = tls.connect({
         host:               hostname,
         socket,
@@ -232,7 +266,6 @@ async function httpsPostViaProxy(
       });
 
       tlsSocket.on("secureConnect", () => {
-        // Build raw HTTP/1.1 request
         const bodyBuf  = Buffer.from(body, "utf-8");
         const allHdrs  = { ...headers, "Content-Length": bodyBuf.length.toString() };
         const reqLines =
@@ -258,7 +291,6 @@ async function httpsPostViaProxy(
             const status        = statusMatch ? parseInt(statusMatch[1], 10) : 0;
             const rawBodyStr    = raw.slice(headerEnd + 4);
 
-            // Decode chunked transfer encoding if present
             const isChunked = /transfer-encoding:\s*chunked/i.test(headerSection);
             let decoded = rawBodyStr;
             if (isChunked) {
@@ -277,7 +309,6 @@ async function httpsPostViaProxy(
               } catch { /* fall through to raw */ }
             }
 
-            // Handle content-encoding (gzip / br / deflate)
             const encMatch = headerSection.match(/content-encoding:\s*(\S+)/i);
             const enc      = encMatch?.[1]?.trim() ?? "";
             if (enc === "gzip" || enc === "br" || enc === "deflate") {
@@ -556,7 +587,6 @@ async function callPropertySearchApi(
 
   const bodyStr = JSON.stringify(body);
 
-  // Build cookie string — datadome is required to pass bot check
   const cookieParts: string[] = [];
   if (DATADOME_COOKIE) cookieParts.push(`datadome=${DATADOME_COOKIE}`);
   if (RAW_COOKIE)      cookieParts.push(RAW_COOKIE);
@@ -675,7 +705,8 @@ export class PropwireScraper extends BaseScraper {
       markets.map((m) => `  • ${m.name}`).join("\n")
     );
     logger.info(
-      `[propwire] Lead types: [${RAW_LEAD_TYPES.join(", ")}] → API filters: [${API_LEAD_TYPE_FILTERS.join(", ")}]\n` +
+      `[propwire] Lead types: [${LEAD_TYPES_LABEL}]\n` +
+      `[propwire] API filters: [${API_LEAD_TYPE_FILTERS.join(", ")}]\n` +
       `[propwire] Max price: $${config.filter.maxPrice.toLocaleString()}`
     );
     logger.info(`[propwire] API endpoint: https://${API_ENDPOINT}/api/property_search`);
@@ -737,7 +768,7 @@ export class PropwireScraper extends BaseScraper {
           searchType: "C", state: fm.state, stateName: fm.stateName,
           title: `${fm.city}, ${fm.state}`, city: fm.city,
         }],
-        lead_type: RAW_LEAD_TYPES, property_type: ["sfr", "mfr"],
+        lead_type: API_LEAD_TYPE_FILTERS, property_type: ["sfr", "mfr"],
       }));
       const shellHtml = await oxylabsFetchHtml(`https://propwire.com/search?filters=${shellFilters}`);
       if (shellHtml) {
@@ -760,7 +791,9 @@ export class PropwireScraper extends BaseScraper {
 
     // ── Phase 2: Scrape via api.propwire.com ─────────────────────────────
 
-    logger.info("[propwire] Phase 2: calling api.propwire.com/api/property_search…");
+    logger.info(
+      `[propwire] Phase 2: scraping off-market leads [${API_LEAD_TYPE_FILTERS.join(", ")}]…`
+    );
 
     for (const market of markets) {
       if (this.results.length >= this.options.maxListings) {
@@ -814,10 +847,13 @@ export class PropwireScraper extends BaseScraper {
           }
           this.visited.add(listing.url);
           this.results.push(listing);
+
+          const leadTypes = (listing as any)._leadTypes as string[] | undefined;
           logger.info(
             `[propwire] ✓ [${this.results.length}/${this.options.maxListings}] ` +
             `${listing.address} @ $${listing.price?.toLocaleString() ?? "?"} ` +
-            (listing.propwireEstimate ? `| AVM $${listing.propwireEstimate.toLocaleString()}` : "| no AVM")
+            (listing.propwireEstimate ? `| AVM $${listing.propwireEstimate.toLocaleString()}` : "| no AVM") +
+            (leadTypes?.length ? ` | ${leadTypes.join(", ")}` : "")
           );
         }
 

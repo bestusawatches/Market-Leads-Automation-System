@@ -165,6 +165,7 @@ export function parsePropwireApiResponse(
 
   const listings: RawListing[] = [];
   let staleCount = 0;
+  let noEstimateCount = 0;
 
   for (const item of raw) {
     // id is the primary key in the confirmed response shape
@@ -279,6 +280,15 @@ export function parsePropwireApiResponse(
     (listing as any)._openMortgage     = parsePrice(item.open_mortgage_balance);
     (listing as any)._leadTypes        = leadTypes;
 
+    // ── Skip listings without estimates ────────────────────────────────────
+    if (!estimatedValue) {
+      noEstimateCount++;
+      logger.debug(
+        `[propwire-parser] Skip ${fullAddress}: no estimate available`
+      );
+      continue;
+    }
+
     listings.push(listing);
 
     logger.debug(
@@ -293,7 +303,7 @@ export function parsePropwireApiResponse(
   const allStale = staleCount > 0 && staleCount >= raw.length;
 
   logger.info(
-    `[propwire-parser] ${listings.length} valid | ${staleCount} stale | hasMore=${hasMore}`
+    `[propwire-parser] ${listings.length} valid | ${staleCount} stale | ${noEstimateCount} no estimate | hasMore=${hasMore}`
   );
 
   return { listings, allStale, totalCount: raw.length, hasMore };

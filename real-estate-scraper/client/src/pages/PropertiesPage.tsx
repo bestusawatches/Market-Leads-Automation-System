@@ -1,14 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { Header, PageContainer } from '@/components/layout';
 import { ExportButton } from '@/components/common';
 import { useProperties } from '@/hooks';
-import { 
-  getZillowListings, 
-  getRedfinListings, 
-  getRealtorListings, 
-  getPropwireListings 
-} from '@/services/api';
-import type { SourceListingsPayload } from '@/services/types';
 
 // Unified listing format for display
 interface UnifiedListing {
@@ -17,11 +10,7 @@ interface UnifiedListing {
   price?: number;
   url?: string;
   source: string;
-  zestimate?: number;
-  redfinEstimate?: number;
-  propwireEstimate?: number;
-  realtorEstimate?: number;
-  estimatedArv?: number; // After Repair Value (median estimate or individual estimate)
+  estimatedArv?: number; // After Repair Value (median estimate)
   arv?: number; // (price + 50000) / estimatedArv, rounded to 2 decimals
 }
 
@@ -44,63 +33,15 @@ const calculateArv = (price?: number, estimatedArv?: number): number | undefined
 
 export const PropertiesPage: React.FC = () => {
   const { properties, loading, error, refetch } = useProperties();
-  const [sourceListings, setSourceListings] = useState<{
-    zillow: SourceListingsPayload | null;
-    redfin: SourceListingsPayload | null;
-    realtor: SourceListingsPayload | null;
-    propwire: SourceListingsPayload | null;
-  }>({
-    zillow: null,
-    redfin: null,
-    realtor: null,
-    propwire: null,
-  });
-  const [sourceLoading, setSourceLoading] = useState(false);
-  const [sourceError, setSourceError] = useState<Error | null>(null);
-
-  // Fetch source-specific listings
-  useEffect(() => {
-    const fetchSourceListings = async () => {
-      setSourceLoading(true);
-      setSourceError(null);
-      try {
-        const [zillowData, redfinData, realtorData, propwireData] = await Promise.all([
-          getZillowListings(1000),
-          getRedfinListings(1000),
-          getRealtorListings(1000),
-          getPropwireListings(1000),
-        ]);
-        setSourceListings({
-          zillow: zillowData,
-          redfin: redfinData,
-          realtor: realtorData,
-          propwire: propwireData,
-        });
-      } catch (err) {
-        setSourceError(err instanceof Error ? err : new Error('Failed to fetch source listings'));
-      } finally {
-        setSourceLoading(false);
-      }
-    };
-
-    fetchSourceListings();
-  }, []);
 
   // Combine all listings into unified format
   const unifiedListings = useMemo(() => {
     const listings: UnifiedListing[] = [];
 
-    // Add listings from properties endpoint
-    // estimatedArv = median of all estimates for this property
+    // Build unified listings only from the `properties` endpoint
     properties.forEach((property) => {
       const estimatedArv = calculateMedian(property.estimates.map((est) => est.value));
-      
-      // Map estimates by source
-      const estimatesBySource: { [key: string]: number } = {};
-      property.estimates.forEach((est) => {
-        estimatesBySource[est.source] = est.value;
-      });
-      
+
       property.listings.forEach((listing) => {
         const arv = calculateArv(listing.price, estimatedArv);
         listings.push({
@@ -109,150 +50,37 @@ export const PropertiesPage: React.FC = () => {
           price: listing.price,
           url: listing.url,
           source: listing.source,
-          zestimate: estimatesBySource['zillow'],
-          redfinEstimate: estimatesBySource['redfin'],
-          propwireEstimate: estimatesBySource['propwire'],
-          realtorEstimate: estimatesBySource['realtor'],
-          estimatedArv, // median of all estimates
+          estimatedArv,
           arv,
         });
-        
-      });
-    });
-
-    // Add Zillow listings
-    // estimatedArv = individual zestimate
-    sourceListings.zillow?.listings.forEach((listing: any) => {
-      const arv = calculateArv(listing.price, listing.zestimate);
-      listings.push({
-        id: listing.id,
-        address: listing.address || 'N/A',
-        price: listing.price,
-        url: listing.url,
-        source: 'zillow',
-        zestimate: listing.zestimate,
-        redfinEstimate: undefined,
-        propwireEstimate: undefined,
-        realtorEstimate: undefined,
-        estimatedArv: listing.zestimate,
-        arv,
-      });
-    });
-
-    // Add Redfin listings
-    // estimatedArv = individual estimate
-    sourceListings.redfin?.listings.forEach((listing: any) => {
-      const arv = calculateArv(listing.price, listing.estimate);
-      listings.push({
-        id: listing.id,
-        address: listing.address || 'N/A',
-        price: listing.price,
-        url: listing.url,
-        source: 'redfin',
-        zestimate: undefined,
-        redfinEstimate: listing.estimate,
-        propwireEstimate: undefined,
-        realtorEstimate: undefined,
-        estimatedArv: listing.estimate,
-        arv,
-      });
-    });
-
-    // Add Realtor listings
-    // estimatedArv = individual estimate
-    sourceListings.realtor?.listings.forEach((listing: any) => {
-      const arv = calculateArv(listing.price, listing.estimate);
-      listings.push({
-        id: listing.id,
-        address: listing.address || 'N/A',
-        price: listing.price,
-        url: listing.url,
-        source: 'realtor',
-        zestimate: undefined,
-        redfinEstimate: undefined,
-        propwireEstimate: undefined,
-        realtorEstimate: listing.estimate,
-        estimatedArv: listing.estimate,
-        arv,
-      });
-    });
-
-    // Add Propwire listings
-    // estimatedArv = individual estimate
-    sourceListings.propwire?.listings.forEach((listing: any) => {
-      const arv = calculateArv(listing.price, listing.estimate);
-      listings.push({
-        id: listing.id,
-        address: listing.address || 'N/A',
-        price: listing.price,
-        url: listing.url,
-        source: 'propwire',
-        zestimate: undefined,
-        redfinEstimate: undefined,
-        propwireEstimate: listing.estimate,
-        realtorEstimate: undefined,
-        estimatedArv: listing.estimate,
-        arv,
       });
     });
 
     return listings;
-  }, [properties, sourceListings]);
+  }, [properties]);
 
   const handleRefresh = async () => {
+    // Only refetch properties on this page
     await refetch();
-    setSourceLoading(true);
-    setSourceError(null);
-    try {
-      const [zillowData, redfinData, realtorData, propwireData] = await Promise.all([
-        getZillowListings(1000),
-        getRedfinListings(1000),
-        getRealtorListings(1000),
-        getPropwireListings(1000),
-      ]);
-      setSourceListings({
-        zillow: zillowData,
-        redfin: redfinData,
-        realtor: realtorData,
-        propwire: propwireData,
-      });
-    } catch (err) {
-      setSourceError(err instanceof Error ? err : new Error('Failed to fetch source listings'));
-    } finally {
-      setSourceLoading(false);
-    }
   };
 
-  const getSourceBadgeColor = (source: string) => {
-    switch (source) {
-      case 'zillow':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'redfin':
-        return 'bg-red-100 text-red-800';
-      case 'realtor':
-        return 'bg-blue-100 text-blue-800';
-      case 'propwire':
-        return 'bg-purple-100 text-purple-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
-  };
+  const getSourceBadgeColor = (source: string) => 'bg-gray-100 text-gray-800';
 
   return (
     <PageContainer>
       <Header
         title="All Listings"
-        subtitle="Unified view of all listings with address, price, source, zestimate, redfin estimate, propwire estimate, realtor estimate, estimated ARV, ARV, and URL"
+        subtitle="Unified view of property listings with address, price, estimated ARV, ARV, and URL"
       />
 
       <div className="p-8">
         <div className="mb-6 flex gap-4 flex-wrap items-center">
           <button
             onClick={handleRefresh}
-            disabled={loading || sourceLoading}
+            disabled={loading}
             className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium flex items-center gap-2"
           >
-            {loading || sourceLoading ? (
+            {loading ? (
               <>
                 <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                 Refreshing...
@@ -268,18 +96,17 @@ export const PropertiesPage: React.FC = () => {
             data={unifiedListings} 
             filename="all-listings" 
             dataType="properties"
-            disabled={loading || sourceLoading}
+            disabled={loading}
           />
         </div>
 
-        {(error || sourceError) && (
+        {error && (
           <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded mb-4">
-            {error && <p>Properties Error: {error.message}</p>}
-            {sourceError && <p>Source Listings Error: {sourceError.message}</p>}
+            <p>Properties Error: {error.message}</p>
           </div>
         )}
 
-        {loading || sourceLoading ? (
+        {loading ? (
           <div className="text-center py-12">
             <p className="text-gray-500">Loading listings...</p>
           </div>
@@ -297,10 +124,7 @@ export const PropertiesPage: React.FC = () => {
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Address</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Price</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Source</th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Zestimate</th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Redfin Estimate</th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Propwire Estimate</th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Realtor Estimate</th>
+                      
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Estimated ARV</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">ARV</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">URL</th>
@@ -323,18 +147,7 @@ export const PropertiesPage: React.FC = () => {
                             {listing.source}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
-                          {listing.zestimate ? `$${listing.zestimate.toLocaleString()}` : 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
-                          {listing.redfinEstimate ? `$${listing.redfinEstimate.toLocaleString()}` : 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
-                          {listing.propwireEstimate ? `$${listing.propwireEstimate.toLocaleString()}` : 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 font-medium">
-                          {listing.realtorEstimate ? `$${listing.realtorEstimate.toLocaleString()}` : 'N/A'}
-                        </td>
+                        
                         <td className="px-4 py-3 text-sm text-gray-600 font-medium">
                           {listing.estimatedArv ? `$${listing.estimatedArv.toLocaleString()}` : 'N/A'}
                         </td>
@@ -367,34 +180,14 @@ export const PropertiesPage: React.FC = () => {
 
             <div className="mt-6 p-4 bg-gray-50 rounded border border-gray-200">
               <h3 className="font-semibold text-gray-900 mb-3">Summary</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-gray-600">Total Listings</p>
                   <p className="text-2xl font-bold text-gray-900">{unifiedListings.length}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-600">Zillow</p>
-                  <p className="text-2xl font-bold text-yellow-700">
-                    {unifiedListings.filter((l) => l.source === 'zillow').length}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-600">Redfin</p>
-                  <p className="text-2xl font-bold text-red-700">
-                    {unifiedListings.filter((l) => l.source === 'redfin').length}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-600">Realtor</p>
-                  <p className="text-2xl font-bold text-blue-700">
-                    {unifiedListings.filter((l) => l.source === 'realtor').length}
-                  </p>
-                </div>
-                <div className="md:col-span-1">
-                  <p className="text-xs text-gray-600">Propwire</p>
-                  <p className="text-2xl font-bold text-purple-700">
-                    {unifiedListings.filter((l) => l.source === 'propwire').length}
-                  </p>
+                  <p className="text-xs text-gray-600">Total Properties</p>
+                  <p className="text-2xl font-bold text-gray-900">{properties.length}</p>
                 </div>
               </div>
             </div>

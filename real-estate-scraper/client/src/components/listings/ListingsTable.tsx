@@ -37,6 +37,7 @@ export const ListingsTable: React.FC<ListingsTableProps> = ({ listings, loading 
                 <th className="px-4 py-3 font-semibold text-gray-700">Address</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">Price</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">Source</th>
+                <th className="px-4 py-3 font-semibold text-gray-700">Date Scrapped</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">URL</th>
               </tr>
             </thead>

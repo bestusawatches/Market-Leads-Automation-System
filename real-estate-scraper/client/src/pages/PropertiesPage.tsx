@@ -10,6 +10,7 @@ interface UnifiedListing {
   price?: number;
   url?: string;
   source: string;
+  createdAt?: string;
   estimatedArv?: number; // After Repair Value (median estimate)
   arv?: number; // (price + 50000) / estimatedArv, rounded to 2 decimals
 }
@@ -50,6 +51,7 @@ export const PropertiesPage: React.FC = () => {
           price: listing.price,
           url: listing.url,
           source: listing.source,
+          createdAt: listing.createdAt,
           estimatedArv,
           arv,
         });
@@ -124,6 +126,7 @@ export const PropertiesPage: React.FC = () => {
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Address</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Price</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Source</th>
+                      <th className="px-4 py-3 text-left font-semibold text-gray-900">Date Scrapped</th>
                       
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">Estimated ARV</th>
                       <th className="px-4 py-3 text-left font-semibold text-gray-900">ARV</th>
@@ -146,6 +149,9 @@ export const PropertiesPage: React.FC = () => {
                           <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${getSourceBadgeColor()}`}>
                             {listing.source}
                           </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {listing.createdAt ? new Date(listing.createdAt).toLocaleString() : 'N/A'}
                         </td>
                         
                         <td className="px-4 py-3 text-sm text-gray-600 font-medium">

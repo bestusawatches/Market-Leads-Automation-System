@@ -19,7 +19,10 @@ export const useListings = (limit = 1000): UseListingsReturn => {
       setLoading(true);
       setError(null);
       const result = await getAllListings(limit);
-      setListings(result.listings);
+      // Exclude source-specific tables from the main listings view
+      const excludedSources = new Set(["propwire", "zillow", "redfin", "realtor"]);
+      const filtered = result.listings.filter((l) => !excludedSources.has(l.source));
+      setListings(filtered);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Failed to fetch listings'));
     } finally {

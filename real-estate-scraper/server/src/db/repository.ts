@@ -8,6 +8,7 @@ import { Listing, Prisma } from "@prisma/client";
 import { prisma } from "./client";
 import { ListingUpsertPayload } from "../types/listing";
 import { logger } from "../utils/logger";
+import pLimit from "p-limit";
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 
@@ -66,8 +67,11 @@ export async function upsertMany(
 ): Promise<{ created: number; updated: number }> {
   if (payloads.length === 0) return { created: 0, updated: 0 };
 
-  const results = await prisma.$transaction(
-    payloads.map((p) =>
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const limit = pLimit(concurrency);
+
+  const tasks = payloads.map((p) =>
+    limit(() =>
       prisma.listing.upsert({
         where: { url: p.url },
         create: {
@@ -86,7 +90,6 @@ export async function upsertMany(
           ownerPhone: p.ownerPhone,
           postedDate: p.postedDate ?? (p as any).listedAt,
           lastSeenAt: new Date(),
-          // Property linking deferred to enrichment phase
         },
         update: {
           title: p.title,
@@ -107,8 +110,10 @@ export async function upsertMany(
     )
   );
 
-  logger.info(`[db] Successfully upserted ${payloads.length} listings`);
-  return { created: 0, updated: 0 }; // Prisma upsert doesn't return counts easily
+  await Promise.all(tasks);
+
+  logger.info(`[db] Successfully upserted ${payloads.length} listings (concurrency=${concurrency})`);
+  return { created: 0, updated: 0 };
 }
 
 // ── Zillow Listings ───────────────────────────────────────────────────────────
@@ -118,78 +123,82 @@ export async function upsertZillowListings(
 ): Promise<void> {
   if (payloads.length === 0) return;
 
-  // Flatten all operations: each payload creates 2 upsert operations (ZillowListing + Listing)
-  const allOperations = payloads.flatMap((p) => [
-    // Upsert to ZillowListing table
-    (prisma.zillowListing as any).upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        zestimate: p.zestimate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        zestimate: p.zestimate,
-        lastSeenAt: new Date(),
-      },
-    }),
-    // Also upsert to main Listing table
-    prisma.listing.upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        source: "zillow",
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-    }),
-  ]);
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const limit = pLimit(concurrency);
 
-  await prisma.$transaction(allOperations);
+  await Promise.all(
+    payloads.map((p) =>
+      limit(() =>
+        prisma.$transaction([
+          (prisma.zillowListing as any).upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              zestimate: p.zestimate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              zestimate: p.zestimate,
+              lastSeenAt: new Date(),
+            },
+          }),
+          prisma.listing.upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              source: "zillow",
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+          }),
+        ])
+      )
+    )
+  );
 
-  logger.info(`[db] Upserted ${payloads.length} Zillow listings to both ZillowListing and Listing tables`);
+  logger.info(`[db] Upserted ${payloads.length} Zillow listings to both ZillowListing and Listing tables (concurrency=${concurrency})`);
 }
 
 // ── Redfin Listings ───────────────────────────────────────────────────────────
@@ -200,77 +209,82 @@ export async function upsertRedfinListings(
   if (payloads.length === 0) return;
 
   // Flatten all operations: each payload creates 2 upsert operations (RedfinListing + Listing)
-  const allOperations = payloads.flatMap((p) => [
-    // Upsert to RedfinListing table
-    (prisma.redfinListing as any).upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        estimate: p.estimate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        estimate: p.estimate,
-        lastSeenAt: new Date(),
-      },
-    }),
-    // Also upsert to main Listing table
-    prisma.listing.upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        source: "redfin",
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-    }),
-  ]);
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const limit = pLimit(concurrency);
 
-  await prisma.$transaction(allOperations);
+  await Promise.all(
+    payloads.map((p) =>
+      limit(() =>
+        prisma.$transaction([
+          (prisma.redfinListing as any).upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              estimate: p.estimate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              estimate: p.estimate,
+              lastSeenAt: new Date(),
+            },
+          }),
+          prisma.listing.upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              source: "redfin",
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+          }),
+        ])
+      )
+    )
+  );
 
-  logger.info(`[db] Upserted ${payloads.length} Redfin listings to both RedfinListing and Listing tables`);
+  logger.info(`[db] Upserted ${payloads.length} Redfin listings to both RedfinListing and Listing tables (concurrency=${concurrency})`);
 }
 
 // ── Realtor Listings ──────────────────────────────────────────────────────────
@@ -281,77 +295,82 @@ export async function upsertRealtorListings(
   if (payloads.length === 0) return;
 
   // Flatten all operations: each payload creates 2 upsert operations (RealtorListing + Listing)
-  const allOperations = payloads.flatMap((p) => [
-    // Upsert to RealtorListing table
-    (prisma.realtorListing as any).upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        estimate: p.estimate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        estimate: p.estimate,
-        lastSeenAt: new Date(),
-      },
-    }),
-    // Also upsert to main Listing table
-    prisma.listing.upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        source: "realtor",
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-    }),
-  ]);
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const limit = pLimit(concurrency);
 
-  await prisma.$transaction(allOperations);
+  await Promise.all(
+    payloads.map((p) =>
+      limit(() =>
+        prisma.$transaction([
+          (prisma.realtorListing as any).upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              estimate: p.estimate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              estimate: p.estimate,
+              lastSeenAt: new Date(),
+            },
+          }),
+          prisma.listing.upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              source: "realtor",
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+          }),
+        ])
+      )
+    )
+  );
 
-  logger.info(`[db] Upserted ${payloads.length} Realtor listings to both RealtorListing and Listing tables`);
+  logger.info(`[db] Upserted ${payloads.length} Realtor listings to both RealtorListing and Listing tables (concurrency=${concurrency})`);
 }
 
 // ── Propwire Listings ─────────────────────────────────────────────────────────
@@ -362,77 +381,82 @@ export async function upsertPropwireListings(
   if (payloads.length === 0) return;
 
   // Flatten all operations: each payload creates 2 upsert operations (PropwireListing + Listing)
-  const allOperations = payloads.flatMap((p) => [
-    // Upsert to PropwireListing table
-    (prisma.propwireListing as any).upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        estimate: p.estimate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        address: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        estimate: p.estimate,
-        lastSeenAt: new Date(),
-      },
-    }),
-    // Also upsert to main Listing table
-    prisma.listing.upsert({
-      where: { url: p.url },
-      create: {
-        url: p.url,
-        source: "propwire",
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-      update: {
-        title: p.title,
-        price: p.price,
-        rawAddress: p.address,
-        location: p.location,
-        propertyType: p.propertyType,
-        bedrooms: p.bedrooms,
-        bathrooms: p.bathrooms,
-        squareFeet: p.squareFeet,
-        description: p.description,
-        postedDate: p.postedDate,
-        lastSeenAt: new Date(),
-      },
-    }),
-  ]);
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const limit = pLimit(concurrency);
 
-  await prisma.$transaction(allOperations);
+  await Promise.all(
+    payloads.map((p) =>
+      limit(() =>
+        prisma.$transaction([
+          (prisma.propwireListing as any).upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              estimate: p.estimate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              address: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              estimate: p.estimate,
+              lastSeenAt: new Date(),
+            },
+          }),
+          prisma.listing.upsert({
+            where: { url: p.url },
+            create: {
+              url: p.url,
+              source: "propwire",
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+            update: {
+              title: p.title,
+              price: p.price,
+              rawAddress: p.address,
+              location: p.location,
+              propertyType: p.propertyType,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+              squareFeet: p.squareFeet,
+              description: p.description,
+              postedDate: p.postedDate,
+              lastSeenAt: new Date(),
+            },
+          }),
+        ])
+      )
+    )
+  );
 
-  logger.info(`[db] Upserted ${payloads.length} Propwire listings to both PropwireListing and Listing tables`);
+  logger.info(`[db] Upserted ${payloads.length} Propwire listings to both PropwireListing and Listing tables (concurrency=${concurrency})`);
 }
 
 // ── Read ──────────────────────────────────────────────────────────────────────
@@ -721,11 +745,9 @@ export async function getSummaryStats(): Promise<{
   bySource: Record<string, number>;
   byDealScore: Record<string, number>;
 }> {
-  const [total, bySrc, byScore] = await Promise.all([
-    prisma.listing.count(),
-    prisma.listing.groupBy({ by: ["source"], _count: true }),
-    prisma.listing.groupBy({ by: ["dealScore"], _count: true }),
-  ]);
+  const total = await prisma.listing.count();
+  const bySrc = await prisma.listing.groupBy({ by: ["source"], _count: true });
+  const byScore = await prisma.listing.groupBy({ by: ["dealScore"], _count: true });
 
   return {
     total,

@@ -30,6 +30,9 @@ export const ListingRow: React.FC<ListingRowProps> = ({ listing, onClick }) => {
       <td className="px-4 py-3">
         <Badge value={listing.source} variant="info" />
       </td>
+      <td className="px-4 py-3 text-sm text-gray-600">
+        {listing.createdAt ? new Date(listing.createdAt).toLocaleString() : 'N/A'}
+      </td>
       <td className="px-4 py-3">
         {listing.url ? (
           <a

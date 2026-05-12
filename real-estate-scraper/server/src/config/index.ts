@@ -183,6 +183,17 @@ export const config = {
       maxPagesPerUrl: Number(process.env.LOOPNET_MAX_PAGES ?? 3),
     },
 
+    creativelisting: {
+      markets: [
+        { name: "Ohio",      stateAbbr: "OH" },
+        { name: "Wisconsin", stateAbbr: "WI" },
+      ] as Array<{ name: string; stateAbbr: string }>,
+
+      // Set to 0 to skip detail page fetches (faster, uses fewer Oxylabs credits).
+      // Increase if listing cards lack bedrooms/sqft data.
+      detailFetchLimit: Number(process.env.CL_DETAIL_LIMIT ?? 0),
+    },
+
   },
 } as const;
 

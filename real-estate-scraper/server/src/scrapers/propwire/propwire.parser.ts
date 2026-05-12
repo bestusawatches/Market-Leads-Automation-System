@@ -256,6 +256,7 @@ export function parsePropwireApiResponse(
       address:      fullAddress,
       price:        price ?? estimatedValue,   // use AVM as fallback price for filtering
       propwireEstimate: estimatedValue,
+      estimate: estimatedValue,
       beds:         typeof item.bedrooms  === "number" ? item.bedrooms  : undefined,
       baths:        typeof item.bathrooms === "number" ? item.bathrooms : undefined,
       sqft:         typeof item.building_area_sf === "number" ? item.building_area_sf : undefined,

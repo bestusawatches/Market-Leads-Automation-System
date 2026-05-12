@@ -129,6 +129,7 @@ export const AVAILABLE_SOURCES = [
   { label: "Realtor.com", value: "realtor" },
   { label: "Redfin", value: "redfin" },
   { label: "Propwire", value: "propwire" },
+  { label: "Creative Listing", value: "creative-listing" },
 ] as const;
 
 export type SourceValue = typeof AVAILABLE_SOURCES[number]["value"];

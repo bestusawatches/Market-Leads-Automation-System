@@ -16,6 +16,7 @@ import { MarketplaceScraper } from "./marketplace/marketplace.scraper";
 import { FacebookScraper } from "./facebook/facebook.scraper";
 import { CrexiScraper } from "./crexi/crexi.scraper";
 import { LoopNetScraper } from "./loopnet/loopnet.scraper";
+import { CreativeListingScraper } from "./creative-listing/creative-listing.scraper";
 import { RealtorScraper } from "./realtor/realtor.scraper";
 import { RedfinScraper } from "./redfin/redfin.scraper";
 import { PropwireScraper } from "./propwire/propwire.scraper";
@@ -39,6 +40,11 @@ export const SCRAPER_REGISTRY: Record<string, ScraperFactory> = {
 
   // ── Crexi ─────────────────────────────────────────────────────────────────
   crexi: () => new CrexiScraper(),
+
+  // CreativeListing (creative-finance marketplace)
+  creativelisting: () => new CreativeListingScraper(),
+  // Accept hyphenated variant from frontend: "creative-listing"
+  "creative-listing": () => new CreativeListingScraper(),
 
   // ── LoopNet ───────────────────────────────────────────────────────────────
   loopnet: () => new LoopNetScraper(),

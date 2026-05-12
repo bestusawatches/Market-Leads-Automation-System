@@ -21,6 +21,10 @@ import { normalizeToPropwireFormat as crexiToPropwire } from "../../scrapers/cre
 import { normalizeToZillowFormat as investorliftToZillow } from "../../scrapers/investorlift/helpers/zillow-address-normalizer";
 import { normalizeToRedfinFormat as investorliftToRedfin } from "../../scrapers/investorlift/helpers/redfin-address-normalizer";
 import { normalizeToPropwireFormat as investorliftToPropwire } from "../../scrapers/investorlift/helpers/propwire-address-normalizer";
+// LoopNet normalizers
+import { normalizeToZillowFormat as loopnetToZillow } from "../../scrapers/loopnet/helpers/zillow-address-normalizer";
+import { normalizeToRedfinFormat as loopnetToRedfin } from "../../scrapers/loopnet/helpers/redfin-address-normalizer";
+import { normalizeToPropwireFormat as loopnetToPropwire } from "../../scrapers/loopnet/helpers/propwire-address-normalizer";
 
 export type EstimateSource = "zillow" | "redfin" | "propwire";
 
@@ -82,6 +86,17 @@ export class AddressNormalizerService {
         }
       }
 
+      // LoopNet: support normalization to zillow/redfin/propwire
+      else if (sourceLower.startsWith("loopnet")) {
+        if (targetEstimateSource === "zillow") {
+          normalizedAddress = loopnetToZillow(mockListing);
+        } else if (targetEstimateSource === "redfin") {
+          normalizedAddress = loopnetToRedfin(mockListing);
+        } else if (targetEstimateSource === "propwire") {
+          normalizedAddress = loopnetToPropwire(mockListing);
+        }
+      }
+
       return {
         address: normalizedAddress ?? null,
         estimateSource: targetEstimateSource,
@@ -108,7 +123,8 @@ export class AddressNormalizerService {
     return (
       sourceLower.startsWith("craigslist_") ||
       sourceLower.startsWith("crexi") ||
-      sourceLower.startsWith("investorlift")
+      sourceLower.startsWith("investorlift") ||
+      sourceLower.startsWith("loopnet")
     );
   }
 }

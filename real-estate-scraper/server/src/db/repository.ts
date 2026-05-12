@@ -545,7 +545,16 @@ export async function getAllPropertiesWithListings(limit = 1000) {
  * @param limit - maximum number of listings to return
  */
 export async function getAllListings(limit = 1000) {
+  // Exclude listings originating from source-specific tables
+  // (we want only canonical/general listings, not source-specific lists)
+  const excludedSources = ["propwire", "zillow", "redfin", "realtor"];
+
   return prisma.listing.findMany({
+    where: {
+      NOT: {
+        source: { in: excludedSources },
+      },
+    },
     include: {
       property: {
         select: {

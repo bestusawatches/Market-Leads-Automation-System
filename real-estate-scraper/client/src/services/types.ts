@@ -125,10 +125,6 @@ export const AVAILABLE_SOURCES = [
   { label: "Crexi", value: "crexi" },
   { label: "LoopNet", value: "loopnet" },
   { label: "Craigslist", value: "craigslist" },
-  { label: "Zillow", value: "zillow" },
-  { label: "Realtor.com", value: "realtor" },
-  { label: "Redfin", value: "redfin" },
-  { label: "Propwire", value: "propwire" },
   { label: "Creative Listing", value: "creative-listing" },
 ] as const;
 

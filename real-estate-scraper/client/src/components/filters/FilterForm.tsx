@@ -167,9 +167,6 @@ export const FilterForm: React.FC<FilterFormProps> = ({
             >
               <option value="">Select a source</option>
               <option value="craigslist">Craigslist</option>
-              <option value="zillow">Zillow</option>
-              <option value="redfin">Redfin</option>
-              <option value="realtor">Realtor.com</option>
               <option value="facebook">Facebook</option>
             </select>
           </div>

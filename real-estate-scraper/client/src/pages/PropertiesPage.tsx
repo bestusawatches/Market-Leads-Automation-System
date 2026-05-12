@@ -64,7 +64,7 @@ export const PropertiesPage: React.FC = () => {
     await refetch();
   };
 
-  const getSourceBadgeColor = (source: string) => 'bg-gray-100 text-gray-800';
+  const getSourceBadgeColor = () => 'bg-gray-100 text-gray-800';
 
   return (
     <PageContainer>
@@ -143,7 +143,7 @@ export const PropertiesPage: React.FC = () => {
                           {listing.price ? `$${listing.price.toLocaleString()}` : 'N/A'}
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${getSourceBadgeColor(listing.source)}`}>
+                          <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${getSourceBadgeColor()}`}>
                             {listing.source}
                           </span>
                         </td>

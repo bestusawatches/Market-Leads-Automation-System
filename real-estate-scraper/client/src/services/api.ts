@@ -99,6 +99,17 @@ export async function triggerScraper(source: string = "all"): Promise<any> {
   return response;
 }
 
+export async function getScrapeStatus(): Promise<any> {
+  const url = buildUrl("/scrape/status");
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch scrape status: ${response.status}`);
+  }
+  return response.json();
+}
+
 /**
  * Export utilities for downloading data as CSV or JSON
  */

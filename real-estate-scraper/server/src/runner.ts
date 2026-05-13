@@ -3,6 +3,7 @@ import { RawListing, ListingUpsertPayload, DealScore } from "./types/listing";
 import { upsertMany, upsertZillowListings, upsertRedfinListings, upsertRealtorListings, upsertPropwireListings, getSummaryStats } from "./db/repository";
 import { enrichListingsBySource } from "./services/enrichment";
 import { logger } from "./utils/logger";
+import { setRunning, setProgress, getStatus } from "./scrape/status";
 
 
 // ── Underwriting engine ───────────────────────────────────────────────────────
@@ -35,6 +36,10 @@ export async function runScrapers(options: RunOptions): Promise<void> {
   const { sourceKeys, factories } = options;
   logger.info(`Runner starting | sources: ${sourceKeys.join(", ")}`);
 
+  const scrapingId = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  setRunning(true, scrapingId);
+  setProgress({ total: sourceKeys.length, completed: 0 });
+
   let totalSaved = 0;
 
   for (const key of sourceKeys) {
@@ -60,6 +65,9 @@ export async function runScrapers(options: RunOptions): Promise<void> {
 
     if (rawListings.length === 0) {
       logger.warn(`[${key}] No listings returned — nothing to save`);
+      // update progress counts even if zero
+      setProgress({ current: key });
+      setProgress({ completed: (getStatus().completed || 0) + 1 });
       continue;
     }
 
@@ -67,6 +75,7 @@ export async function runScrapers(options: RunOptions): Promise<void> {
     const payloads = scoreListings(rawListings);
 
     try {
+      setProgress({ current: key });
       // Route to appropriate table based on source
       if (key === "zillow") {
         await upsertZillowListings(payloads);
@@ -96,6 +105,8 @@ export async function runScrapers(options: RunOptions): Promise<void> {
     } catch (err) {
       logger.error(`[${key}] DB save failed: ${err}`);
     }
+      // increment completed sources count
+      setProgress({ completed: (getStatus().completed || 0) + 1 });
   }
 
   logger.info(`\n${"=".repeat(60)}`);
@@ -111,4 +122,5 @@ export async function runScrapers(options: RunOptions): Promise<void> {
   }
 
   logger.info("=".repeat(60));
+  setRunning(false);
 }

@@ -67,7 +67,7 @@ export async function upsertMany(
 ): Promise<{ created: number; updated: number }> {
   if (payloads.length === 0) return { created: 0, updated: 0 };
 
-  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 2;
   const limit = pLimit(concurrency);
 
   const tasks = payloads.map((p) =>
@@ -123,7 +123,7 @@ export async function upsertZillowListings(
 ): Promise<void> {
   if (payloads.length === 0) return;
 
-  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 2;
   const limit = pLimit(concurrency);
 
   await Promise.all(
@@ -209,7 +209,7 @@ export async function upsertRedfinListings(
   if (payloads.length === 0) return;
 
   // Flatten all operations: each payload creates 2 upsert operations (RedfinListing + Listing)
-  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 2;
   const limit = pLimit(concurrency);
 
   await Promise.all(
@@ -295,7 +295,7 @@ export async function upsertRealtorListings(
   if (payloads.length === 0) return;
 
   // Flatten all operations: each payload creates 2 upsert operations (RealtorListing + Listing)
-  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 2;
   const limit = pLimit(concurrency);
 
   await Promise.all(
@@ -381,7 +381,7 @@ export async function upsertPropwireListings(
   if (payloads.length === 0) return;
 
   // Flatten all operations: each payload creates 2 upsert operations (PropwireListing + Listing)
-  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 5;
+  const concurrency = Number(process.env.DB_UPSERT_CONCURRENCY) || 2;
   const limit = pLimit(concurrency);
 
   await Promise.all(

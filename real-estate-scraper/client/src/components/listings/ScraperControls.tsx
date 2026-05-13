@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useScraper } from '@/hooks';
+import { useScraper, useScrapeProgressPolling } from '@/hooks';
 import { AVAILABLE_SOURCES } from '@/services/types';
 
 export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ onScrapingStart }) => {
@@ -107,6 +107,27 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
       <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
         <p className="font-semibold mb-1">💡 Note:</p>
         <p>Scraping runs in the background and may take several minutes depending on the data source. You can continue browsing while scraping is in progress.</p>
+      </div>
+
+      {/* Progress (polled) */}
+      {/** Use a short-polling hook to display scrape progress if running */}
+      <ScrapeProgress />
+    </div>
+  );
+};
+
+const ScrapeProgress: React.FC = () => {
+  const status = useScrapeProgressPolling();
+  if (!status || !status.running) return null;
+
+  const percent = typeof status.percent === 'number' ? status.percent : 0;
+  const current = status.current || 'running';
+
+  return (
+    <div className="mt-4">
+      <div className="text-sm text-gray-600 mb-1">Scraping: {current} — {percent}%</div>
+      <div className="bg-gray-200 h-2 rounded overflow-hidden">
+        <div style={{ width: `${Math.max(2, percent)}%` }} className="bg-indigo-600 h-2 transition-all" />
       </div>
     </div>
   );

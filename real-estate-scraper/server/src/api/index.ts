@@ -9,6 +9,7 @@ import {
   getRedfinListingsHandler,
   getRealtorListingsHandler,
   getPropwireListingsHandler
+  , getScrapeStatusHandler
 } from "./handlers";
 
 const router = Router();
@@ -446,5 +447,10 @@ router.get("/listings/realtor", getRealtorListingsHandler);
  *         description: Internal server error
  */
 router.get("/listings/propwire", getPropwireListingsHandler);
+
+/**
+ * Scrape status (polled)
+ */
+router.get("/scrape/status", getScrapeStatusHandler);
 
 export default router;

@@ -48,11 +48,12 @@
 //   Endpoint A — avmHistoricalData (preferred):
 //     GET /stingray/api/home/details/avmHistoricalData
 //         ?propertyId=<id>&accessLevel=1
-//     Response shape (after XSSI strip):
-//       payload.predictedValue          ← current Redfin Estimate (flat)
+//     Response shape (after XSSI strip) — VERIFIED May 2026:
+//       payload.propertyTimeSeries[]    ← monthly history; LAST element = current estimate
+//       payload.predictedValue          ← present on some responses (flat)
 //       payload.avmValue                ← alias on some responses
 //       payload.currentValue            ← alias on some responses
-//       payload.avmHistory[]            ← history array; last entry = current
+//       payload.avmHistory[]            ← history array; last entry = current (older format)
 //         .predictedValue | .value
 //
 //   Endpoint B — belowTheFold (fallback):
@@ -181,8 +182,6 @@ export function parseRedfinApiResponse(
       : `https://www.redfin.com${urlPath}`;
 
     // ── Address ───────────────────────────────────────────────────────────
-    // GIS response uses streetLine (enveloped) + city/state/zip (raw strings)
-    // rather than a combined "address" field.
     const street = val<string>(home.streetLine);
     const city   = home.city   as string | undefined;
     const state  = home.state  as string | undefined;
@@ -196,15 +195,11 @@ export function parseRedfinApiResponse(
     const price = parsePrice(val<number>(home.price));
 
     // ── Beds / baths / sqft ───────────────────────────────────────────────
-    // beds and baths come as raw numbers in the GIS response (not enveloped).
-    // sqFt IS enveloped: { value: N, level: 1 }.
     const bedrooms   = home.beds  as number | undefined;
     const bathrooms  = home.baths as number | undefined;
     const squareFeet = val<number>(home.sqFt);
 
     // ── Days on market ────────────────────────────────────────────────────
-    // GIS field is "dom" (enveloped), NOT "daysOnMarket".
-    // Fallback: "timeOnRedfin" (enveloped ms) → convert to days.
     let daysOnMarket: number | undefined = val<number>(home.dom);
 
     if (daysOnMarket == null) {
@@ -230,8 +225,6 @@ export function parseRedfinApiResponse(
     }
 
     // ── Property type ─────────────────────────────────────────────────────
-    // Prefer uiPropertyType (display code) over propertyType (internal code).
-    // Both are raw numbers — not enveloped.
     const propCode     = (home.uiPropertyType ?? home.propertyType) as number | undefined;
     const propertyType = (propCode != null ? PROPERTY_TYPE[propCode] : undefined) ?? "unknown";
 
@@ -239,8 +232,6 @@ export function parseRedfinApiResponse(
     const redfinAvm = parsePrice(val<number>(home.redfinAVM));
 
     // ── propertyId (needed for Phase 2 AVM API calls) ─────────────────────
-    // Stored as _redfinPropertyId on the listing object (underscore = internal).
-    // The GIS response provides this as a raw number.
     const propertyId = home.propertyId as number | undefined;
 
     logger.debug(
@@ -274,8 +265,6 @@ export function parseRedfinApiResponse(
     results.push(listing);
   }
 
-  // allStale: true only if we had homes with age data and ALL were stale.
-  // Uses "dom" (enveloped) and "timeOnRedfin" (enveloped) — both need val().
   const itemsWithAge = homes.filter(
     (h: any) => val<number>(h.dom) != null || val<number>(h.timeOnRedfin) != null
   ).length;
@@ -285,22 +274,7 @@ export function parseRedfinApiResponse(
 }
 
 // ── AVM API URL builders ──────────────────────────────────────────────────────
-//
-// These endpoints are the same "stingray" API family as the GIS endpoint.
-// Neither requires JavaScript rendering — plain HTTP GET returns JSON.
-// Both accept the XSSI guard prefix (stripped by stripXSSI before parsing).
 
-/**
- * Builds the avmHistoricalData URL for a given Redfin propertyId.
- *
- * Known response fields (verified April 2026):
- *   payload.predictedValue          — current estimate (preferred)
- *   payload.avmValue                — alias used on some property types
- *   payload.currentValue            — alias used on some property types
- *   payload.avmHistory[]            — historical data points (last = current)
- *     .predictedValue | .value      — value at that point in time
- *   payload.displayLevel            — access level (1 = public)
- */
 export function buildAvmUrl(propertyId: number): string {
   return (
     `https://www.redfin.com/stingray/api/home/details/avmHistoricalData` +
@@ -308,17 +282,6 @@ export function buildAvmUrl(propertyId: number): string {
   );
 }
 
-/**
- * Builds the belowTheFold URL for a given Redfin propertyId.
- * Used as fallback when avmHistoricalData returns no estimate.
- *
- * Known response fields (verified April 2026):
- *   payload.listingInfo.redfinEstimate.value   — modern AVM key
- *   payload.mediaBrowserInfo
- *     .virtualTourInfo.avmInfo.predictedValue  — alternate AVM location
- *   payload.publicRecordsInfo
- *     .basicInfo.propertyLastSoldPrice         — last-sold price (last resort)
- */
 export function buildBelowTheFoldUrl(propertyId: number): string {
   return (
     `https://www.redfin.com/stingray/api/home/details/belowTheFold` +
@@ -330,19 +293,25 @@ export function buildBelowTheFoldUrl(propertyId: number): string {
 
 export interface AvmApiResult {
   redfinEstimate: number | undefined;
-  /** Raw parsed JSON payload — saved to disk for debugging */
   rawPayload:     any;
 }
 
 /**
  * Parses the avmHistoricalData endpoint response.
  *
- * Tries these fields in priority order:
- *   1. payload.predictedValue
- *   2. payload.avmValue
- *   3. payload.currentValue
- *   4. payload.avmHistory[last].predictedValue
- *   5. payload.avmHistory[last].value
+ * Priority order (verified against live API responses, May 2026):
+ *
+ *   1. payload.propertyTimeSeries[last]   ← ACTUAL field returned by API.
+ *                                           Monthly time series; the final
+ *                                           element is the current estimate.
+ *                                           Confirmed in live response May 2026.
+ *
+ *   2. payload.predictedValue             ← flat field, present on some responses
+ *   3. payload.avmValue                   ← alias used on some property types
+ *   4. payload.currentValue               ← alias used on some property types
+ *
+ *   5. payload.avmHistory[last].predictedValue  ← older API format (pre-2025)
+ *   6. payload.avmHistory[last].value           ← older API format fallback
  */
 export function parseAvmHistoricalData(raw: string, address: string): AvmApiResult {
   let json: any;
@@ -362,7 +331,24 @@ export function parseAvmHistoricalData(raw: string, address: string): AvmApiResu
 
   const payload = json?.payload ?? json;
 
-  // Priority 1–3: flat fields
+  // ── Priority 1: propertyTimeSeries (verified live API format, May 2026) ──
+  //
+  // The API returns a monthly time series as a flat number array.
+  // The LAST element is always the most current estimate.
+  // Example: [155920, 130767] → current estimate is 130767.
+  const propSeries: number[] | undefined = payload?.propertyTimeSeries;
+  if (Array.isArray(propSeries) && propSeries.length > 0) {
+    const candidate = propSeries[propSeries.length - 1];
+    if (typeof candidate === "number" && candidate > 10_000) {
+      logger.debug(
+        `[redfin-parser] AVM via propertyTimeSeries[${propSeries.length - 1}] = ` +
+        `$${candidate.toLocaleString()} for "${address}"`
+      );
+      return { redfinEstimate: candidate, rawPayload: payload };
+    }
+  }
+
+  // ── Priorities 2–4: flat fields (present on some property types) ──────────
   for (const key of ["predictedValue", "avmValue", "currentValue"]) {
     const candidate = parsePrice(payload?.[key]);
     if (candidate && candidate > 10_000) {
@@ -374,7 +360,7 @@ export function parseAvmHistoricalData(raw: string, address: string): AvmApiResu
     }
   }
 
-  // Priority 4–5: history array — last entry is the most recent estimate
+  // ── Priorities 5–6: avmHistory array (older API format, pre-2025) ────────
   const history: any[] = payload?.avmHistory ?? [];
   if (history.length > 0) {
     const latest = history[history.length - 1];
@@ -382,7 +368,7 @@ export function parseAvmHistoricalData(raw: string, address: string): AvmApiResu
       const candidate = parsePrice(latest?.[key]);
       if (candidate && candidate > 10_000) {
         logger.debug(
-          `[redfin-parser] AVM via avmHistoricalData.history[last][${key}] = ` +
+          `[redfin-parser] AVM via avmHistoricalData.avmHistory[last][${key}] = ` +
           `$${candidate.toLocaleString()} for "${address}"`
         );
         return { redfinEstimate: candidate, rawPayload: payload };
@@ -390,7 +376,10 @@ export function parseAvmHistoricalData(raw: string, address: string): AvmApiResu
     }
   }
 
-  logger.debug(`[redfin-parser] avmHistoricalData: no estimate found for "${address}"`);
+  logger.debug(
+    `[redfin-parser] avmHistoricalData: no estimate found for "${address}" — ` +
+    `payload keys: ${Object.keys(payload ?? {}).join(", ")}`
+  );
   return { redfinEstimate: undefined, rawPayload: payload };
 }
 
@@ -456,7 +445,10 @@ export function parseBelowTheFold(raw: string, address: string): AvmApiResult {
     return { redfinEstimate: lastSold, rawPayload: payload };
   }
 
-  logger.debug(`[redfin-parser] belowTheFold: no estimate found for "${address}"`);
+  logger.debug(
+    `[redfin-parser] belowTheFold: no estimate found for "${address}" — ` +
+    `payload keys: ${Object.keys(payload ?? {}).join(", ")}`
+  );
   return { redfinEstimate: undefined, rawPayload: payload };
 }
 

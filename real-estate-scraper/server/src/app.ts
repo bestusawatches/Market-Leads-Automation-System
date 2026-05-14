@@ -9,8 +9,14 @@ const app: Express = express();
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
-// Request logging middleware
+// Request logging middleware — suppress noisy endpoints
+const IGNORED_LOG_PATHS = new Set(['/api/v1/scrape/status']);
 app.use((req: Request, res: Response, next: NextFunction) => {
+  // Skip logging for the scrape status endpoint (OPTIONS/GET spam)
+  if (IGNORED_LOG_PATHS.has(req.path) && (req.method === 'OPTIONS' || req.method === 'GET')) {
+    return next();
+  }
+
   logger.info(`${req.method} ${req.path}`);
   next();
 });

@@ -5,26 +5,13 @@ export interface ApiResponse<Data> {
 }
 
 export interface FilterCriteria {
-  name: string;
-  description?: string;
-  source: string;
+  // Simplified filter schema
   minPrice?: number;
   maxPrice?: number;
-  propertyTypes?: string[];
-  locations?: string[];
+  allowedPropertyTypes?: string[]; // e.g. ["single_family","multi_family","duplex"]
   keywords?: string[];
-  excludeKeywords?: string[];
-  postedAfter?: string | null;
-  postedBefore?: string | null;
-  minBedrooms?: number;
-  maxBedrooms?: number;
-  minBathrooms?: number;
-  maxBathrooms?: number;
-  minSquareFeet?: number;
-  maxSquareFeet?: number;
-  minEquity?: number;
-  minArv?: number;
-  isActive?: boolean;
+  propertyTypeTokens?: string[];
+  allowedLocations?: string[];
 }
 
 export interface SavedFilter extends FilterCriteria {

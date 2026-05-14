@@ -602,26 +602,13 @@ export async function getAllListings(limit = 1000) {
 // Only one filter record exists in the database
 
 export interface SavedFilterInput {
-  name: string;
-  description?: string;
-  source: string;
+  // Simplified to match Prisma `SavedFilter` schema
   minPrice?: number;
   maxPrice?: number;
-  propertyTypes?: string[];
-  locations?: string[];
+  allowedPropertyTypes?: string[];
   keywords?: string[];
-  excludeKeywords?: string[];
-  postedAfter?: Date;
-  postedBefore?: Date;
-  minBedrooms?: number;
-  maxBedrooms?: number;
-  minBathrooms?: number;
-  maxBathrooms?: number;
-  minSquareFeet?: number;
-  maxSquareFeet?: number;
-  minEquity?: number;
-  minArv?: number;
-  isActive?: boolean;
+  propertyTypeTokens?: string[];
+  allowedLocations?: string[];
 }
 
 /**
@@ -631,61 +618,32 @@ export interface SavedFilterInput {
 export async function upsertFilter(data: SavedFilterInput) {
   // Get existing filter (should be only one)
   const existingFilter = await prisma.savedFilter.findFirst();
-
   if (existingFilter) {
-    // Update existing filter
+    // Update existing filter (only the simplified fields)
     return prisma.savedFilter.update({
       where: { id: existingFilter.id },
       data: {
-        name: data.name,
-        description: data.description,
-        source: data.source,
         minPrice: data.minPrice,
         maxPrice: data.maxPrice,
-        propertyTypes: data.propertyTypes || [],
-        locations: data.locations || [],
+        allowedPropertyTypes: data.allowedPropertyTypes || [],
         keywords: data.keywords || [],
-        excludeKeywords: data.excludeKeywords || [],
-        postedAfter: data.postedAfter,
-        postedBefore: data.postedBefore,
-        minBedrooms: data.minBedrooms,
-        maxBedrooms: data.maxBedrooms,
-        minBathrooms: data.minBathrooms,
-        maxBathrooms: data.maxBathrooms,
-        minSquareFeet: data.minSquareFeet,
-        maxSquareFeet: data.maxSquareFeet,
-        minEquity: data.minEquity,
-        minArv: data.minArv,
-        isActive: data.isActive !== undefined ? data.isActive : true,
-      },
-    });
-  } else {
-    // Create new filter
-    return prisma.savedFilter.create({
-      data: {
-        name: data.name,
-        description: data.description,
-        source: data.source,
-        minPrice: data.minPrice,
-        maxPrice: data.maxPrice,
-        propertyTypes: data.propertyTypes || [],
-        locations: data.locations || [],
-        keywords: data.keywords || [],
-        excludeKeywords: data.excludeKeywords || [],
-        postedAfter: data.postedAfter,
-        postedBefore: data.postedBefore,
-        minBedrooms: data.minBedrooms,
-        maxBedrooms: data.maxBedrooms,
-        minBathrooms: data.minBathrooms,
-        maxBathrooms: data.maxBathrooms,
-        minSquareFeet: data.minSquareFeet,
-        maxSquareFeet: data.maxSquareFeet,
-        minEquity: data.minEquity,
-        minArv: data.minArv,
-        isActive: data.isActive !== undefined ? data.isActive : true,
+        propertyTypeTokens: data.propertyTypeTokens || [],
+        allowedLocations: data.allowedLocations || [],
       },
     });
   }
+
+  // Create new filter
+  return prisma.savedFilter.create({
+    data: {
+      minPrice: data.minPrice,
+      maxPrice: data.maxPrice,
+      allowedPropertyTypes: data.allowedPropertyTypes || [],
+      keywords: data.keywords || [],
+      propertyTypeTokens: data.propertyTypeTokens || [],
+      allowedLocations: data.allowedLocations || [],
+    },
+  });
 }
 
 /**

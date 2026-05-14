@@ -14,24 +14,12 @@ export const FilterForm: React.FC<FilterFormProps> = ({
   loading = false,
 }) => {
   const [formState, setFormState] = useState<FilterCriteria>({
-    name: initialFilter?.name || '',
-    description: initialFilter?.description || '',
-    source: initialFilter?.source || '',
     minPrice: initialFilter?.minPrice || undefined,
     maxPrice: initialFilter?.maxPrice || undefined,
-    propertyTypes: initialFilter?.propertyTypes || [],
-    locations: initialFilter?.locations || [],
+    allowedPropertyTypes: initialFilter?.allowedPropertyTypes || [],
     keywords: initialFilter?.keywords || [],
-    excludeKeywords: initialFilter?.excludeKeywords || [],
-    minBedrooms: initialFilter?.minBedrooms || undefined,
-    maxBedrooms: initialFilter?.maxBedrooms || undefined,
-    minBathrooms: initialFilter?.minBathrooms || undefined,
-    maxBathrooms: initialFilter?.maxBathrooms || undefined,
-    minSquareFeet: initialFilter?.minSquareFeet || undefined,
-    maxSquareFeet: initialFilter?.maxSquareFeet || undefined,
-    minEquity: initialFilter?.minEquity || undefined,
-    minArv: initialFilter?.minArv || undefined,
-    isActive: initialFilter?.isActive !== false,
+    propertyTypeTokens: initialFilter?.propertyTypeTokens || [],
+    allowedLocations: initialFilter?.allowedLocations || [],
   });
 
   const [error, setError] = useState<string | null>(null);
@@ -40,24 +28,12 @@ export const FilterForm: React.FC<FilterFormProps> = ({
   useEffect(() => {
     if (initialFilter) {
       setFormState({
-        name: initialFilter.name || '',
-        description: initialFilter.description || '',
-        source: initialFilter.source || '',
         minPrice: initialFilter.minPrice,
         maxPrice: initialFilter.maxPrice,
-        propertyTypes: initialFilter.propertyTypes || [],
-        locations: initialFilter.locations || [],
+        allowedPropertyTypes: initialFilter.allowedPropertyTypes || [],
         keywords: initialFilter.keywords || [],
-        excludeKeywords: initialFilter.excludeKeywords || [],
-        minBedrooms: initialFilter.minBedrooms,
-        maxBedrooms: initialFilter.maxBedrooms,
-        minBathrooms: initialFilter.minBathrooms,
-        maxBathrooms: initialFilter.maxBathrooms,
-        minSquareFeet: initialFilter.minSquareFeet,
-        maxSquareFeet: initialFilter.maxSquareFeet,
-        minEquity: initialFilter.minEquity,
-        minArv: initialFilter.minArv,
-        isActive: initialFilter.isActive !== false,
+        propertyTypeTokens: initialFilter.propertyTypeTokens || [],
+        allowedLocations: initialFilter.allowedLocations || [],
       });
     }
   }, [initialFilter]);
@@ -79,7 +55,7 @@ export const FilterForm: React.FC<FilterFormProps> = ({
   };
 
   const handleArrayChange = (
-    field: 'locations' | 'propertyTypes' | 'keywords' | 'excludeKeywords',
+    field: 'allowedLocations' | 'allowedPropertyTypes' | 'keywords' | 'propertyTypeTokens',
     value: string
   ) => {
     const items = value.split(',').map((item) => item.trim()).filter(Boolean);
@@ -94,18 +70,11 @@ export const FilterForm: React.FC<FilterFormProps> = ({
     setError(null);
     setSuccess(false);
 
-    if (!formState.name.trim()) {
-      setError('Filter name is required');
-      return;
-    }
-
-    if (!formState.source.trim()) {
-      setError('Source is required');
-      return;
-    }
+    // No longer require name/source in simplified schema
 
     try {
-      await onSubmit(formState);
+      // Cast to any to match API payload shape
+      await onSubmit(formState as any);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err) {
@@ -126,52 +95,6 @@ export const FilterForm: React.FC<FilterFormProps> = ({
           Filter saved successfully!
         </div>
       )}
-
-      <Card>
-        <h3 className="text-lg font-semibold mb-4 text-gray-900">Basic Information</h3>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Filter Name</label>
-            <input
-              type="text"
-              name="name"
-              value={formState.name}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="e.g., Cleveland Under $150k"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-            <textarea
-              name="description"
-              value={formState.description || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="Optional description"
-              rows={3}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Source</label>
-            <select
-              name="source"
-              value={formState.source}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              required
-            >
-              <option value="">Select a source</option>
-              <option value="craigslist">Craigslist</option>
-              <option value="facebook">Facebook</option>
-            </select>
-          </div>
-        </div>
-      </Card>
 
       <Card>
         <h3 className="text-lg font-semibold mb-4 text-gray-900">Price Range</h3>
@@ -204,124 +127,32 @@ export const FilterForm: React.FC<FilterFormProps> = ({
       </Card>
 
       <Card>
-        <h3 className="text-lg font-semibold mb-4 text-gray-900">Property Specifications</h3>
-
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Min Bedrooms</label>
-            <input
-              type="number"
-              name="minBedrooms"
-              value={formState.minBedrooms || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Max Bedrooms</label>
-            <input
-              type="number"
-              name="maxBedrooms"
-              value={formState.maxBedrooms || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Min Bathrooms</label>
-            <input
-              type="number"
-              name="minBathrooms"
-              value={formState.minBathrooms || ''}
-              onChange={handleChange}
-              step="0.5"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Max Bathrooms</label>
-            <input
-              type="number"
-              name="maxBathrooms"
-              value={formState.maxBathrooms || ''}
-              onChange={handleChange}
-              step="0.5"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Min Sq Ft</label>
-            <input
-              type="number"
-              name="minSquareFeet"
-              value={formState.minSquareFeet || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Max Sq Ft</label>
-            <input
-              type="number"
-              name="maxSquareFeet"
-              value={formState.maxSquareFeet || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            />
-          </div>
+        <h3 className="text-lg font-semibold mb-4 text-gray-900">Property Types</h3>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Allowed Property Types (comma-separated)</label>
+          <input
+            type="text"
+            value={(formState.allowedPropertyTypes || []).join(', ')}
+            onChange={(e) => handleArrayChange('allowedPropertyTypes', e.target.value)}
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            placeholder="single_family, multi_family, duplex"
+          />
         </div>
-      </Card>
-
-      <Card>
-        <h3 className="text-lg font-semibold mb-4 text-gray-900">Investment Criteria</h3>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Min Equity</label>
-            <input
-              type="number"
-              name="minEquity"
-              value={formState.minEquity || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="Minimum equity estimate"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Min ARV</label>
-            <input
-              type="number"
-              name="minArv"
-              value={formState.minArv || ''}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="Minimum home value estimate"
-            />
-          </div>
+        <div className="mt-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">Property Type Tokens (comma-separated)</label>
+          <input
+            type="text"
+            value={(formState.propertyTypeTokens || []).join(', ')}
+            onChange={(e) => handleArrayChange('propertyTypeTokens', e.target.value)}
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            placeholder="single family, single-family, sfh, duplex"
+          />
         </div>
       </Card>
 
       <Card>
         <h3 className="text-lg font-semibold mb-4 text-gray-900">Keywords & Locations</h3>
-
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Locations (comma-separated)</label>
-            <input
-              type="text"
-              value={(formState.locations || []).join(', ')}
-              onChange={(e) => handleArrayChange('locations', e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="e.g., Cleveland, OH; Milwaukee, WI"
-            />
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Keywords (comma-separated)</label>
             <input
@@ -329,34 +160,21 @@ export const FilterForm: React.FC<FilterFormProps> = ({
               value={(formState.keywords || []).join(', ')}
               onChange={(e) => handleArrayChange('keywords', e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="e.g., investment; rental; fixer"
+              placeholder="investment, rental, duplex"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Exclude Keywords (comma-separated)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Allowed Locations (comma-separated)</label>
             <input
               type="text"
-              value={(formState.excludeKeywords || []).join(', ')}
-              onChange={(e) => handleArrayChange('excludeKeywords', e.target.value)}
+              value={(formState.allowedLocations || []).join(', ')}
+              onChange={(e) => handleArrayChange('allowedLocations', e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="e.g., lease; commercial; HOA"
+              placeholder="ohio, cleveland, columbus, milwaukee"
             />
           </div>
         </div>
-      </Card>
-
-      <Card>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            name="isActive"
-            checked={formState.isActive}
-            onChange={handleChange}
-            className="w-4 h-4 rounded border-gray-300 focus:ring-indigo-500"
-          />
-          <span className="text-sm font-medium text-gray-700">Active Filter</span>
-        </label>
       </Card>
 
       <div className="flex gap-4">

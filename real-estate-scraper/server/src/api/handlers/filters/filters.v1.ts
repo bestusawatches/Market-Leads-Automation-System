@@ -15,26 +15,12 @@ export const updateFilterHandler = async (
   try {
     const filterData: SavedFilterInput = req.body;
 
-    // Validation
-    if (!filterData.name || !filterData.name.trim()) {
-      return res.status(400).json({
-        status: "error",
-        message: "Filter name is required",
-      });
-    }
-
-    if (!filterData.source || !filterData.source.trim()) {
-      return res.status(400).json({
-        status: "error",
-        message: "Filter source is required",
-      });
-    }
-
-    logger.info(`[PUT /filters] Upserting filter: ${filterData.name}`);
+    // No name/source required in simplified schema — accept the filter payload
+    logger.info(`[PUT /filters] Upserting filter`);
 
     const filter = await upsertFilter(filterData);
 
-    logger.info(`[PUT /filters] Successfully upserted filter: ${filter.name}`);
+    logger.info(`[PUT /filters] Successfully upserted filter`);
 
     res.status(200).json({
       status: "ok",

@@ -227,40 +227,16 @@ model PropwireListing {
 
 model SavedFilter {
   id           String   @id @default(cuid())
-  name         String   // e.g. "Cleveland Under $150k"
-  description  String?
-  source       String   // scraper source: "craigslist" | "zillow" | "redfin" | "realtor" | etc.
-
-  // ── Filter criteria ───────────────────────────────────────────────────────
+ 
+  // ── Filter criteria (simplified to match config.filter) ──────────────────
   minPrice     Int?
   maxPrice     Int?
-  propertyTypes String[]  // array of types: ["single_family", "multi_family", "duplex"]
-  locations    String[]   // array of cities/states: ["Cleveland, OH", "Milwaukee, WI"]
-  keywords     String[]   // search terms to include: ["investment", "rental"]
-  excludeKeywords String[] // terms to exclude: ["lease", "commercial"]
-  
-  // ── Date filtering ────────────────────────────────────────────────────────
-  postedAfter  DateTime?  // minimum listing date
-  postedBefore DateTime?  // maximum listing date
-  
-  // ── Property-specific filters ─────────────────────────────────────────────
-  minBedrooms  Int?
-  maxBedrooms  Int?
-  minBathrooms Float?
-  maxBathrooms Float?
-  minSquareFeet Int?
-  maxSquareFeet Int?
-  
-  // ── Enrichment filters ────────────────────────────────────────────────────
-  // Used to find listings meeting ARV/equity thresholds
-  minEquity    Int?       // minimum equity estimate (ARV - price)
-  minArv       Int?       // minimum home value estimate
-  
-  // ── Meta ──────────────────────────────────────────────────────────────────
-  isActive     Boolean  @default(true)
+  allowedPropertyTypes String[] // e.g. ["single_family","multi_family","duplex"]
+  keywords     String[]         // include terms
+  propertyTypeTokens String[]   // tokens used to map property types
+  allowedLocations String[]     // e.g. ["ohio","cleveland","wi"]
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@index([source])
-  @@index([isActive])
 }

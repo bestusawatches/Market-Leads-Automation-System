@@ -273,6 +273,7 @@ export async function createBrowser(proxyUrl?: string | null): Promise<BrowserHa
       "--disable-infobars",
       "--disable-gpu",
       "--no-zygote",
+      "--single-process", 
       "--window-size=1440,900",
       "--start-maximized",
       "--disable-features=IsolateOrigins",

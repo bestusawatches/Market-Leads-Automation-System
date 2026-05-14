@@ -245,21 +245,6 @@ export const PropertiesPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Summary strip */}
-            <div className="grid grid-cols-2 gap-4">
-              {[
-                { label: 'Total Listings', value: unifiedListings.length },
-                { label: 'Total Properties', value: properties.length },
-              ].map(({ label, value }) => (
-                <div
-                  key={label}
-                  className="bg-white border border-slate-200 rounded-xl px-5 py-4 shadow-sm"
-                >
-                  <p className="text-xs text-slate-400 uppercase tracking-wide font-medium mb-1">{label}</p>
-                  <p className="text-2xl font-bold text-slate-900">{value}</p>
-                </div>
-              ))}
-            </div>
           </div>
         )}
       </div>

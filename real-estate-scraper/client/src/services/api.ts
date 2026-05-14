@@ -112,7 +112,7 @@ export async function getScrapeStatus(): Promise<any> {
 
 /**
  * Export utilities for downloading data as CSV or JSON
- */
+*/
 
 export function exportToCSV<T extends Record<string, any>>(
   data: T[],

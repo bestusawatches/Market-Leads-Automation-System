@@ -46,6 +46,12 @@ export async function runScrapers(options: RunOptions): Promise<void> {
   let totalSaved = 0;
 
   for (const key of sourceKeys) {
+    // Check if stop was requested
+    if (getStatus().stopRequested) {
+      logger.warn(`Stop requested by user — aborting scrape run`);
+      break;
+    }
+
     const factory = factories[key];
     if (!factory) {
       logger.error(`No factory found for source "${key}" — skipping`);

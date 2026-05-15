@@ -9,6 +9,7 @@ export type ScrapeStatus = {
   total?: number;
   completed?: number;
   percent?: number;
+  stopRequested?: boolean;
 };
 
 const emitter = new EventEmitter();
@@ -27,6 +28,7 @@ export function setRunning(running: boolean, scrapingId?: string) {
     status.finishedAt = undefined;
     status.completed = 0;
     status.percent = 0;
+    status.stopRequested = false;
   } else {
     status.finishedAt = new Date().toISOString();
   }
@@ -43,6 +45,11 @@ export function setProgress(partial: Partial<Pick<ScrapeStatus, "current" | "tot
   emitter.emit("update", getStatus());
 }
 
+export function requestStop() {
+  status.stopRequested = true;
+  emitter.emit("update", getStatus());
+}
+
 export function onUpdate(cb: (s: ScrapeStatus) => void) {
   emitter.on("update", cb);
 }
@@ -55,6 +62,7 @@ export default {
   getStatus,
   setRunning,
   setProgress,
+  requestStop,
   onUpdate,
   offUpdate,
 };

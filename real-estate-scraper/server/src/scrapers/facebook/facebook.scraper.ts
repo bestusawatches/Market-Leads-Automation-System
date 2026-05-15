@@ -200,9 +200,9 @@ export class FacebookScraper extends BaseScraper {
   // ── 2FA / Checkpoint ───────────────────────────────────────────────────────
 
   private async handleTwoFactorOrCheckpoint(page: Page): Promise<void> {
-    logger.info("=== MANUAL INTERVENTION REQUIRED ===");
-    logger.info("Complete the verification in the browser window, then press Resume.");
-    await page.pause();
+    logger.warn("[facebook] ⚠️  2FA / Checkpoint detected in headless mode");
+    logger.warn("[facebook] Automatic 2FA resolution is not available in headless mode.");
+    logger.warn("[facebook] Please provide a pre-authenticated session file or run with headless=false for manual intervention.");
     try {
       await page.context().storageState({ path: SESSION_FILE });
     } catch {}
@@ -457,7 +457,7 @@ export class FacebookScraper extends BaseScraper {
     logger.info("[facebook] Launching dedicated no-proxy browser for Facebook");
 
     const browser = await chromium.launch({
-      headless: false,
+      headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",

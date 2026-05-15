@@ -26,6 +26,11 @@ import { normalizeToZillowFormat as loopnetToZillow } from "../../scrapers/loopn
 import { normalizeToRedfinFormat as loopnetToRedfin } from "../../scrapers/loopnet/helpers/redfin-address-normalizer";
 import { normalizeToPropwireFormat as loopnetToPropwire } from "../../scrapers/loopnet/helpers/propwire-address-normalizer";
 
+// Creative Listing normalizers
+import { normalizeToZillowFormat as creativelistingToZillow } from "../../scrapers/creative-listing/helpers/zillow-address-normalizer";
+import { normalizeToRedfinFormat as creativelistingToRedfin } from "../../scrapers/creative-listing/helpers/redfin-address-normalizer";
+import { normalizeToPropwireFormat as creativelistingToPropwire } from "../../scrapers/creative-listing/helpers/propwire-address-normalizer";
+
 export type EstimateSource = "zillow" | "redfin" | "propwire";
 
 export interface NormalizedAddress {
@@ -95,6 +100,23 @@ export class AddressNormalizerService {
         } else if (targetEstimateSource === "propwire") {
           normalizedAddress = loopnetToPropwire(mockListing);
         }
+      } else if (sourceLower.startsWith("creativelisting")) {
+        // Creative Listing has separate address/city/state/zip fields
+        const clMockListing = {
+          url: listing.url,
+          address: listing.rawAddress || undefined,
+          city: listing.city || undefined,
+          state: listing.state || undefined,
+          zip: listing.zip || undefined,
+          source: listing.source
+        };
+        if (targetEstimateSource === "zillow") {
+          normalizedAddress = creativelistingToZillow(clMockListing);
+        } else if (targetEstimateSource === "redfin") {
+          normalizedAddress = creativelistingToRedfin(clMockListing);
+        } else if (targetEstimateSource === "propwire") {
+          normalizedAddress = creativelistingToPropwire(clMockListing);
+        }
       }
 
       return {
@@ -124,7 +146,8 @@ export class AddressNormalizerService {
       sourceLower.startsWith("craigslist_") ||
       sourceLower.startsWith("crexi") ||
       sourceLower.startsWith("investorlift") ||
-      sourceLower.startsWith("loopnet")
+      sourceLower.startsWith("loopnet") ||
+      sourceLower.startsWith("creativelisting")
     );
   }
 }

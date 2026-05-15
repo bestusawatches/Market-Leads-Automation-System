@@ -18,12 +18,12 @@ const REMAINING_SCRAPERS = [
 
 export function initializeDailyScrapeJob() {
   cronManager.createJob({
-    name: "Daily Scrape (3:30pm WAT)",
-    schedule: "30 15 * * *",
+    name: "Daily Scrape (4pm WAT)",
+    schedule: "0 16 * * *",
     timeZone: process.env.SCRAPE_TIMEZONE || "Africa/Lagos",
     async onTick() {
       try {
-        logger.info("[cron] Daily scrape job starting at 3:30pm WAT");
+        logger.info("[cron] Daily scrape job starting at 4pm WAT");
 
         // Run priority scrapers first (sequentially)
         if (PRIORITY_SCRAPERS.length > 0) {

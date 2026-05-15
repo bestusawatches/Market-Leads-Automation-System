@@ -6,6 +6,7 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
   const { triggering, error, success, lastTriggeredAt, trigger, reset } = useScraper();
   const [selectedSource, setSelectedSource] = useState('all');
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const status = useScrapeProgressPolling();
 
   useEffect(() => {
     if (success) {
@@ -35,7 +36,7 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
               setSelectedSource(e.target.value);
               reset();
             }}
-            disabled={triggering}
+            disabled={triggering || status?.running}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed transition-colors"
           >
             {AVAILABLE_SOURCES.map((source) => (
@@ -54,7 +55,7 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
         {/* Trigger Button */}
         <button
           onClick={handleTrigger}
-          disabled={triggering}
+          disabled={triggering || status?.running}
           className="w-full sm:w-auto px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold flex items-center justify-center gap-2 whitespace-nowrap"
         >
           {triggering ? (
@@ -111,21 +112,22 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
 
       {/* Progress (polled) */}
       {/** Use a short-polling hook to display scrape progress if running */}
-      <ScrapeProgress />
+      <ScrapeProgress status={status} />
     </div>
   );
 };
 
-const ScrapeProgress: React.FC = () => {
-  const status = useScrapeProgressPolling();
+const ScrapeProgress: React.FC<{ status?: any }> = ({ status: s }) => {
+  const status = s ?? useScrapeProgressPolling();
   if (!status || !status.running) return null;
 
   const percent = typeof status.percent === 'number' ? status.percent : 0;
-  const current = status.current || 'running';
+  const isCron = typeof status.scrapingId === 'string' && status.scrapingId.includes('-cron');
+  const label = isCron ? 'Cron: Daily Scrape' : (status.current || 'running');
 
   return (
     <div className="mt-4">
-      <div className="text-sm text-gray-600 mb-1">Scraping: {current} — {percent}%</div>
+      <div className="text-sm text-gray-600 mb-1">{label} — {percent}%</div>
       <div className="bg-gray-200 h-2 rounded overflow-hidden">
         <div style={{ width: `${Math.max(2, percent)}%` }} className="bg-indigo-600 h-2 transition-all" />
       </div>

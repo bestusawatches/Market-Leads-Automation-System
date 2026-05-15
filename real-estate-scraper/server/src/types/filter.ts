@@ -44,7 +44,8 @@ export interface PropertyFilter {
 /**
  * Dynamic filter builder for applying filters to listings
  * Returned by parsers/enrichers to indicate which filters passed
- */
+*/
+
 export interface FilterResult {
   passed: boolean;
   reason?: string; // explanation if failed
@@ -54,7 +55,8 @@ export interface FilterResult {
 /**
  * Scraper-specific filter options
  * Extends PropertyFilter with scraper runtime behavior
- */
+*/
+
 export interface ScraperFilterOptions extends PropertyFilter {
   // ── Pagination limits ─────────────────────────────────────────────────────
   maxPages?: number;

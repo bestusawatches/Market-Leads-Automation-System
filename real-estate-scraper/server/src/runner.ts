@@ -30,15 +30,18 @@ function scoreListings(listings: RawListing[]): ListingUpsertPayload[] {
 export interface RunOptions {
   sourceKeys: string[];
   factories: Record<string, () => import("./scrapers/base.scraper").BaseScraper>;
+  manageStatus?: boolean;
 }
 
 export async function runScrapers(options: RunOptions): Promise<void> {
-  const { sourceKeys, factories } = options;
+  const { sourceKeys, factories, manageStatus = true } = options;
   logger.info(`Runner starting | sources: ${sourceKeys.join(", ")}`);
 
   const scrapingId = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-  setRunning(true, scrapingId);
-  setProgress({ total: sourceKeys.length, completed: 0 });
+  if (manageStatus) {
+    setRunning(true, scrapingId);
+    setProgress({ total: sourceKeys.length, completed: 0 });
+  }
 
   let totalSaved = 0;
 
@@ -122,5 +125,5 @@ export async function runScrapers(options: RunOptions): Promise<void> {
   }
 
   logger.info("=".repeat(60));
-  setRunning(false);
+  if (manageStatus) setRunning(false);
 }

@@ -123,9 +123,15 @@ export class CrexiScraper extends BaseScraper {
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
         "--disable-infobars",
+        "--disable-gpu",
+        "--no-zygote",
+        "--single-process",
         "--window-size=1440,900",
+        "--disable-features=IsolateOrigins",
+        "--disable-site-isolation-trials",
       ],
     };
 

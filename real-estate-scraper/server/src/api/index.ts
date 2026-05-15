@@ -5,6 +5,7 @@ import {
   updateFilterHandler,
   getFilterHandler,
   triggerScrapeHandler,
+  stopScrapeHandler,
   getZillowListingsHandler,
   getRedfinListingsHandler,
   getRealtorListingsHandler,
@@ -340,6 +341,41 @@ router.get("/filters", getFilterHandler);
  *         description: Internal server error
  */
 router.post("/scrape/trigger", triggerScrapeHandler);
+
+/**
+ * @swagger
+ * /scrape/stop:
+ *   post:
+ *     tags:
+ *       - Scraper
+ *     summary: Stop the currently running scraper
+ *     description: Request to stop the currently running scrape job. The current source will finish, then scraping stops.
+ *     responses:
+ *       200:
+ *         description: Stop request accepted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     isStopping:
+ *                       type: boolean
+ *                     scrapingId:
+ *                       type: string
+ *       400:
+ *         description: No scrape is currently running
+ *       500:
+ *         description: Internal server error
+ */
+router.post("/scrape/stop", stopScrapeHandler);
 
 /**
  * @swagger

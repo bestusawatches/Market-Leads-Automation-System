@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useScraper, useScrapeProgressPolling } from '@/hooks';
+import { stopScraper } from '@/services/api';
 import { AVAILABLE_SOURCES } from '@/services/types';
 
 export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ onScrapingStart }) => {
   const { triggering, error, success, lastTriggeredAt, trigger, reset } = useScraper();
   const [selectedSource, setSelectedSource] = useState('all');
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<Error | null>(null);
   const status = useScrapeProgressPolling();
 
   useEffect(() => {
@@ -19,6 +22,18 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
   const handleTrigger = async () => {
     await trigger(selectedSource);
     onScrapingStart?.();
+  };
+
+  const handleStop = async () => {
+    try {
+      setStopping(true);
+      setStopError(null);
+      await stopScraper();
+    } catch (err) {
+      setStopError(err instanceof Error ? err : new Error('Failed to stop scraper'));
+    } finally {
+      setStopping(false);
+    }
   };
 
   return (
@@ -70,6 +85,27 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
             </>
           )}
         </button>
+
+        {/* Stop Button */}
+        {status?.running && (
+          <button
+            onClick={handleStop}
+            disabled={stopping}
+            className="w-full sm:w-auto px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold flex items-center justify-center gap-2 whitespace-nowrap"
+          >
+            {stopping ? (
+              <>
+                <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                Stopping...
+              </>
+            ) : (
+              <>
+                <span>⏹</span>
+                Stop Scraper
+              </>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Success Message */}
@@ -99,6 +135,21 @@ export const ScraperControls: React.FC<{ onScrapingStart?: () => void }> = ({ on
             <div>
               <p className="font-semibold text-red-900">Failed to start scraper</p>
               <p className="text-sm text-red-700">{error.message}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stop Error Message */}
+      {stopError && (
+        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <div className="flex items-start gap-2">
+            <svg className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+            <div>
+              <p className="font-semibold text-red-900">Failed to stop scraper</p>
+              <p className="text-sm text-red-700">{stopError.message}</p>
             </div>
           </div>
         </div>

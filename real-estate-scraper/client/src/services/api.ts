@@ -99,6 +99,14 @@ export async function triggerScraper(source: string = "all"): Promise<any> {
   return response;
 }
 
+export async function stopScraper(): Promise<any> {
+  const url = buildUrl("/scrape/stop");
+  const response = await fetchJson<any>(url, {
+    method: "POST",
+  });
+  return response;
+}
+
 export async function getScrapeStatus(): Promise<any> {
   const url = buildUrl("/scrape/status");
   const response = await fetch(url, {

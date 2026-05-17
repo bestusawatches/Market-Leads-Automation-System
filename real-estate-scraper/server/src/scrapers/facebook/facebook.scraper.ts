@@ -10,7 +10,7 @@ import { parseFacebookGroupPosts, stableKey } from "./facebook.parser";
 import * as fs from "fs";
 import * as path from "path";
 
-const SESSION_FILE = "facebook-session.json";
+const SESSION_FILE = path.join(__dirname, "../../..", "facebook-session.json");
 
 // Normalises web.facebook.com → www.facebook.com so session cookies apply.
 // Also handles newline-separated URLs in case .env is misconfigured.

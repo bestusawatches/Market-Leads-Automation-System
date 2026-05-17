@@ -23,35 +23,25 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // CORS middleware for frontend dev requests
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const allowedOrigins = [
-    "http://localhost:3000",
-    "https://market-leads-automation-system.vercel.app",
-    "https://market-leads-automation-syste-git-99c67f-best-amazings-projects.vercel.app",
-    process.env.CLIENT_ORIGIN,
-  ].filter(Boolean);
-
   const origin = req.headers.origin as string | undefined;
 
-  // Prefer exact-match allowlist, but if origin is present reflect it so
-  // preflight requests receive an Access-Control-Allow-Origin header.
-  if (origin && allowedOrigins.includes(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-  } else if (origin) {
-    // Reflect the request origin when not in the allowlist. This is
-    // permissive but solves cases where a reverse proxy or build step
-    // changes the origin header. Adjust if you need stricter policy.
-    res.header("Access-Control-Allow-Origin", origin);
+  // Always set CORS headers for all origins (permissive for dev/testing)
+  // Change this to restrict to specific origins in production if needed
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
-    // No origin (server-to-server or curl) – set wildcard
-    res.header("Access-Control-Allow-Origin", allowedOrigins[0] || "*");
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+  res.setHeader("Access-Control-Max-Age", "3600");
 
+  // Handle preflight requests
   if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
+    res.status(200).end();
+    return;
   }
 
   next();

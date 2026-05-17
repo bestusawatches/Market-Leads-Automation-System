@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from "express";
 import { SCRAPER_REGISTRY, resolveSourceKeys } from "../../../scrapers/registry";
 import { runScrapers } from "../../../runner";
 import { logger } from "../../../utils/logger";
+import { initializeProxyRotator } from "../../../utils/proxy-rotator";
+import { config } from "../../../config";
 
 /**
  * Trigger all scrapers (equivalent to npm run scrape:all)
@@ -19,6 +21,17 @@ export const triggerScrapeHandler = async (
     const source = (req.body.source || req.query.source || "all") as string;
     
     logger.info(`[POST /scrape/trigger] Scrape request received for source(s): ${source}`);
+
+    // Initialize proxy rotator with configured proxies
+    if (config.proxyUrls && config.proxyUrls.length > 0) {
+      initializeProxyRotator(config.proxyUrls);
+    } else if (config.proxyUrl) {
+      // Fallback to legacy single proxy mode
+      initializeProxyRotator([config.proxyUrl]);
+    } else {
+      // No proxies configured, initialize with empty list
+      initializeProxyRotator([]);
+    }
 
     // Resolve source keys
     let sourceKeys: string[];

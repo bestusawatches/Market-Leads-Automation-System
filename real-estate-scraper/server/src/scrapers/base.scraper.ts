@@ -9,6 +9,7 @@ import { RawListing, PropertyType } from "../types/listing";
 import { config } from "../config";
 import { logger } from "../utils/logger";
 import { BrowserHandle, createBrowser, sleep, jitter } from "../utils/browser";
+import { getProxyRotator } from "../utils/proxy-rotator";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -33,6 +34,34 @@ export abstract class BaseScraper {
       maxListings: options.maxListings ?? config.maxListings,
       proxyUrl: options.proxyUrl !== undefined ? options.proxyUrl : null,
     };
+  }
+
+  /**
+   * Get the effective proxy for this scraper:
+   * 1. If explicitly set in options, use that (allows per-scraper override)
+   * 2. If PROXY_URL env is set (legacy), use that
+   * 3. Otherwise, get next rotated proxy from PROXY_URLS
+   * 4. If no proxies configured, return null (scrape without proxy)
+   */
+  protected getEffectiveProxy(): string | null {
+    // Explicit override in options
+    if (this.options.proxyUrl !== null) {
+      return this.options.proxyUrl;
+    }
+
+    // Legacy single proxy from env
+    if (config.proxyUrl) {
+      return config.proxyUrl;
+    }
+
+    // Rotated proxy from PROXY_URLS
+    try {
+      const rotator = getProxyRotator();
+      return rotator.getNextProxy();
+    } catch {
+      // ProxyRotator not initialized — no proxies configured
+      return null;
+    }
   }
 
   // ── Abstract interface (implement in each scraper) ─────────────────────────
@@ -130,7 +159,8 @@ export abstract class BaseScraper {
     this.results = [];
     const rejected: Array<{ listing: RawListing; reason: string }> = [];
 
-    const handle = await createBrowser(this.options.proxyUrl);
+    const effectiveProxy = this.getEffectiveProxy();
+    const handle = await createBrowser(effectiveProxy);
 
     try {
       for (let page = 1; page <= this.options.maxPages; page++) {

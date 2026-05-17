@@ -31,7 +31,11 @@ export const config = {
   },
 
   // ── Proxy ─────────────────────────────────────────────────────────────────
+  // Single proxy (legacy, overrides PROXY_URLS if set)
   proxyUrl: process.env.PROXY_URL || null,
+  
+  // Multiple proxies for rotation (comma-separated)
+  proxyUrls: urlListFromEnv("PROXY_URLS", []),
 
   // ── Global scraping limits ────────────────────────────────────────────────
   maxPages:     Number(process.env.MAX_PAGES        ?? 10),

@@ -101,13 +101,11 @@ export class AddressNormalizerService {
           normalizedAddress = loopnetToPropwire(mockListing);
         }
       } else if (sourceLower.startsWith("creativelisting")) {
-        // Creative Listing has separate address/city/state/zip fields
+        // Creative Listing stores addresses as concatenated strings
         const clMockListing = {
           url: listing.url,
           address: listing.rawAddress || undefined,
-          city: listing.city || undefined,
-          state: listing.state || undefined,
-          zip: listing.zip || undefined,
+          location: listing.location || undefined,
           source: listing.source
         };
         if (targetEstimateSource === "zillow") {

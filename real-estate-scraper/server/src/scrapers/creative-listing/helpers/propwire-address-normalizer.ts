@@ -16,23 +16,40 @@ interface PropwireAddressComponents {
 
 /**
  * Extract address components from Creative Listing data for Propwire format
+ * Creative Listing stores full address as concatenated string: "Street, City, State ZipCode"
  */
 export function extractPropwireAddressComponents(
-  address: string | undefined,
-  city: string | undefined,
-  state: string | undefined,
-  zip: string | undefined
+  fullAddress: string | undefined
 ): PropwireAddressComponents {
-  // Parse street from address field
+  if (!fullAddress) return {};
+
+  // Parse address in format: "Street, City, State ZipCode"
+  // Example: "286 Alhambra Way, Akron, OH 44302"
+  const parts = fullAddress.split(",").map(p => p.trim());
+
   let street: string | undefined;
-  
-  if (address) {
-    // Remove city, state, zip if appended
-    street = address
-      .replace(new RegExp(`${city}.*`, "i"), "")
-      .replace(new RegExp(`${state}.*`, "i"), "")
-      .replace(new RegExp(`${zip}.*`, "i"), "")
-      .trim();
+  let city: string | undefined;
+  let state: string | undefined;
+  let zip: string | undefined;
+
+  if (parts.length >= 1) {
+    street = parts[0];
+  }
+
+  if (parts.length >= 2) {
+    city = parts[1];
+  }
+
+  if (parts.length >= 3) {
+    // Last part is "State ZipCode"
+    const stateZip = parts[2].trim();
+    const stateZipParts = stateZip.split(/\s+/);
+    if (stateZipParts.length >= 1) {
+      state = stateZipParts[0];
+    }
+    if (stateZipParts.length >= 2) {
+      zip = stateZipParts[1];
+    }
   }
 
   return { street, city, state, zip };
@@ -60,12 +77,8 @@ export function formatPropwireAddress(components: PropwireAddressComponents): st
  * Normalize Creative Listing to Propwire address format
  */
 export function normalizeToPropwireFormat(listing: RawListing): string | undefined {
-  const components = extractPropwireAddressComponents(
-    listing.address,
-    listing.city,
-    listing.state,
-    listing.zip
-  );
+  // Creative listing stores full address as concatenated string
+  const components = extractPropwireAddressComponents(listing.address);
 
   return formatPropwireAddress(components);
 }

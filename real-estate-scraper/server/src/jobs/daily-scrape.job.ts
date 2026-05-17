@@ -3,6 +3,8 @@ import { SCRAPER_REGISTRY } from "../scrapers/registry";
 import { runScrapers } from "../runner";
 import { logger } from "../utils/logger";
 import { setRunning, setProgress } from "../scrape/status";
+import { initializeProxyRotator } from "../utils/proxy-rotator";
+import { config } from "../config";
 
 const PRIORITY_SCRAPERS = ["zillow", "propwire", "redfin", "realtor"];
 
@@ -25,6 +27,17 @@ export function initializeDailyScrapeJob() {
     async onTick() {
       try {
         logger.info("[cron] Daily scrape job starting at 4:15pm WAT");
+
+        // Initialize proxy rotator with configured proxies
+        if (config.proxyUrls && config.proxyUrls.length > 0) {
+          initializeProxyRotator(config.proxyUrls);
+        } else if (config.proxyUrl) {
+          // Fallback to legacy single proxy mode
+          initializeProxyRotator([config.proxyUrl]);
+        } else {
+          // No proxies configured, initialize with empty list
+          initializeProxyRotator([]);
+        }
 
         // Combine lists and manage status across the full cron run so UI
         // progress shows the entire job (priority + remaining).

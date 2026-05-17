@@ -13,6 +13,7 @@ import { runScrapers } from "./src/runner";
 import { logger } from "./src/utils/logger";
 import { prisma } from "./src/db/client";
 import { config } from "./src/config";
+import { initializeProxyRotator } from "./src/utils/proxy-rotator";
 
 async function main() {
   const argv = await yargs(hideBin(process.argv))
@@ -52,6 +53,18 @@ async function main() {
   }
 
   logger.info(`Sources resolved: ${sourceKeys.join(", ")}`);
+
+  // Initialize proxy rotator with configured proxies
+  if (config.proxyUrls && config.proxyUrls.length > 0) {
+    initializeProxyRotator(config.proxyUrls);
+    logger.info(`[proxy-rotator] Initialized with ${config.proxyUrls.length} proxy(ies) from PROXY_URLS`);
+  } else if (config.proxyUrl) {
+    initializeProxyRotator([config.proxyUrl]);
+    logger.info(`[proxy-rotator] Initialized with legacy PROXY_URL`);
+  } else {
+    initializeProxyRotator([]);
+    logger.info(`[proxy-rotator] No proxies configured — scrapers will run without proxies`);
+  }
 
   try {
     await runScrapers({ sourceKeys, factories: SCRAPER_REGISTRY });

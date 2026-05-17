@@ -10,6 +10,7 @@ import { config } from "../config";
 import { logger } from "../utils/logger";
 import { BrowserHandle, createBrowser, sleep, jitter } from "../utils/browser";
 import { getProxyRotator } from "../utils/proxy-rotator";
+import { getStatus } from "../scrape/status";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -168,6 +169,11 @@ export abstract class BaseScraper {
           logger.info(
             `[${this.sourceName}] Reached ${this.options.maxListings} listings — stopping`,
           );
+          break;
+        }
+
+        if (getStatus().stopRequested) {
+          logger.warn(`[${this.sourceName}] Stop requested — aborting scrape`);
           break;
         }
 

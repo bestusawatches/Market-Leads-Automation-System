@@ -57,7 +57,7 @@ function buildDetailUrl(listingId: string | number): string {
 // Original object-per-row path, preserved as fallback
 function mapObjectItems(items: any[], source: string): RawListing[] {
   if (items.length === 0) {
-    logger.warn("[il-parser] No items found in API response");
+    logger.warn("[il-parser] No items found in API response (empty array)");
     return [];
   }
   logger.debug(`[il-parser] API returned ${items.length} raw items`);
@@ -104,7 +104,7 @@ export function parseApiResponse(json: unknown, source: string): RawListing[] {
       columns = raw.columns as string[];
       rows = raw.data as any[][];
     }
-    // Fallback: array of objects
+    // Fallback: array of objects — try common envelope keys
     else if (Array.isArray(raw.data)) {
       const items = raw.data as any[];
       return mapObjectItems(items, source);
@@ -112,15 +112,33 @@ export function parseApiResponse(json: unknown, source: string): RawListing[] {
       return mapObjectItems(raw.results as any[], source);
     } else if (Array.isArray(raw.properties)) {
       return mapObjectItems(raw.properties as any[], source);
-    } else {
+    } else if (Array.isArray(raw.items)) {
+      return mapObjectItems(raw.items as any[], source);
+    } else if (
+      typeof raw.data === "object" &&
+      !Array.isArray(raw.data) &&
+      Array.isArray((raw.data as any).properties)
+    ) {
+      // Nested: { data: { properties: [...] } }
+      return mapObjectItems((raw.data as any).properties as any[], source);
+    }
+    // Try any top-level array key as a last resort
+    else {
       for (const key of Object.keys(raw)) {
         if (Array.isArray(raw[key])) {
           return mapObjectItems(raw[key] as any[], source);
         }
       }
     }
+
+    // No array found — log diagnostic info
+    logger.warn(
+      `[il-parser] No items found — top-level keys: ${Object.keys(raw).join(", ")}. Raw object keys and types: ${Object.entries(raw)
+        .map(([k, v]) => `${k}: ${typeof v}${Array.isArray(v) ? `[${(v as any[]).length}]` : ""}`)
+        .join(", ")}`
+    );
   } else if (Array.isArray(json)) {
-    return mapObjectItems(json, source);
+    return mapObjectItems(json as any[], source);
   }
 
   if (rows.length === 0) {

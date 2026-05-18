@@ -84,10 +84,25 @@ export class InvestorLiftScraper extends BaseScraper {
       });
 
       // ── LOAD PAGE ────────────────────────────────────────────────────
+      // Use domcontentloaded instead of networkidle to release page sooner
+      // and reduce memory footprint. We'll wait explicitly for the properties API.
       await page.goto(MARKETPLACE_URL, {
-        waitUntil: "networkidle",
-        timeout: 60_000,
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
       });
+
+      // ── Wait for properties XHR explicitly ──────────────────────────
+      try {
+        await page.waitForResponse(
+          (r) =>
+            r.url().includes("properties") &&
+            r.status() === 200,
+          { timeout: 15_000 }
+        );
+        logger.info(`[investorlift] Properties XHR received`);
+      } catch (err) {
+        logger.warn(`[investorlift] Properties XHR wait timed out — may retry on scroll`);
+      }
 
       // ── IP BLOCK / CAPTCHA DETECTION ─────────────────────────────────
       // Render's server IP can get soft-blocked after repeated scrapes.
@@ -113,15 +128,13 @@ export class InvestorLiftScraper extends BaseScraper {
       }
 
       // ── SETTLE PROMISES FROM INITIAL PAGE LOAD ───────────────────────
-      // CLI logs show 3294 listings arrive on load BEFORE any scrolling.
-      // Settle these first so we can short-circuit and skip the scroll loop
-      // when the API responds immediately (the common case).
+      // CLI logs show listings arrive on load. Settle these first.
       await sleep(2000);
       await Promise.allSettled([...responsePromises]);
 
       if (apiListings.length > 0) {
         logger.info(
-          `[investorlift] Got ${apiListings.length} listings from initial page load — skipping scroll`,
+          `[investorlift] Got ${apiListings.length} listings from initial page load — returning immediately`,
         );
         return apiListings;
       }

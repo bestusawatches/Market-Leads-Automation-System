@@ -21,7 +21,9 @@ export class InvestorLiftScraper extends BaseScraper {
    * Bypass the proxy entirely and connect directly.
    */
   protected getEffectiveProxy(): string | null {
-    logger.info(`[investorlift] Proxy explicitly disabled — connecting direct to bypass proxy header detection`);
+    logger.info(
+      `[investorlift] Proxy explicitly disabled — connecting direct to bypass proxy header detection`,
+    );
     return null;
   }
 
@@ -55,12 +57,16 @@ export class InvestorLiftScraper extends BaseScraper {
         const contentType = response.headers()["content-type"] || "";
         if (!contentType.includes("application/json")) return;
 
+        logger.debug(`[investorlift] Intercepted JSON response: ${url}`);
+
         const p = response
           .json()
           .then((json) => {
             const parsed = parseApiResponse(json, this.sourceName);
             if (parsed.length > 0) {
-              logger.info(`[investorlift] API hit → ${parsed.length} listings`);
+              logger.info(
+                `[investorlift] API hit → ${parsed.length} listings from ${url}`,
+              );
             }
             for (const listing of parsed) {
               if (!listing.url || seenUrls.has(listing.url)) continue;
@@ -68,8 +74,10 @@ export class InvestorLiftScraper extends BaseScraper {
               apiListings.push(listing);
             }
           })
-          .catch(() => {
-            /* ignore non-JSON / network errors */
+          .catch((err) => {
+            logger.debug(
+              `[investorlift] Failed to parse response from ${url}: ${err}`,
+            );
           });
 
         responsePromises.push(p);
@@ -81,11 +89,54 @@ export class InvestorLiftScraper extends BaseScraper {
         timeout: 60_000,
       });
 
+      // ── IP BLOCK / CAPTCHA DETECTION ─────────────────────────────────
+      // Render's server IP can get soft-blocked after repeated scrapes.
+      // Detect this early so logs clearly show the cause of failure.
+      const landedUrl = page.url();
+      const pageTitle = await page.title();
+      logger.info(
+        `[investorlift] Landed on: ${landedUrl} | title: "${pageTitle}"`,
+      );
+
+      if (
+        pageTitle.toLowerCase().includes("access denied") ||
+        pageTitle.toLowerCase().includes("captcha") ||
+        pageTitle.toLowerCase().includes("just a moment") || // Cloudflare
+        pageTitle.toLowerCase().includes("attention required") || // Cloudflare
+        landedUrl.includes("challenge") ||
+        landedUrl.includes("blocked")
+      ) {
+        logger.error(
+          `[investorlift] IP blocked or CAPTCHA detected — aborting page ${pageNumber}`,
+        );
+        return [];
+      }
+
+      // ── SETTLE PROMISES FROM INITIAL PAGE LOAD ───────────────────────
+      // CLI logs show 3294 listings arrive on load BEFORE any scrolling.
+      // Settle these first so we can short-circuit and skip the scroll loop
+      // when the API responds immediately (the common case).
+      await sleep(2000);
+      await Promise.allSettled([...responsePromises]);
+
+      if (apiListings.length > 0) {
+        logger.info(
+          `[investorlift] Got ${apiListings.length} listings from initial page load — skipping scroll`,
+        );
+        return apiListings;
+      }
+
       // ── SCROLL TO TRIGGER PAGINATION API CALLS ───────────────────────
+      // Only reached when the initial load yielded nothing (e.g. slow server,
+      // lazy-loaded first batch). Slightly longer per-scroll delay vs before
+      // to give XHRs more time to complete on resource-constrained hosts.
+      logger.info(
+        `[investorlift] No listings on initial load — scrolling to trigger API calls`,
+      );
       for (let i = 0; i < 5; i++) {
         logger.info(`[investorlift] Scrolling batch ${i + 1}`);
         await page.mouse.wheel(0, 5000);
-        await sleep(2000);
+        await sleep(2500);
       }
 
       // ── WAIT FOR ALL IN-FLIGHT JSON PROMISES TO SETTLE ───────────────
@@ -100,7 +151,7 @@ export class InvestorLiftScraper extends BaseScraper {
       // ── RETURN API RESULTS IF WE GOT ANY ─────────────────────────────
       if (apiListings.length > 0) {
         logger.info(
-          `[investorlift] Collected ${apiListings.length} listings from API`,
+          `[investorlift] Collected ${apiListings.length} listings from API (after scroll)`,
         );
         return apiListings;
       }

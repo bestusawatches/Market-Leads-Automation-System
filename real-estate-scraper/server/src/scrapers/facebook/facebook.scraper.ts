@@ -3,14 +3,13 @@
 import { chromium, Page } from "playwright";
 import { BaseScraper, ScraperOptions } from "../base.scraper";
 import { BrowserHandle, sleep } from "../../utils/browser";
-import { getStatus } from "../../scrape/status";
 import { RawListing } from "../../types/listing";
 import { logger } from "../../utils/logger";
 import { parseFacebookGroupPosts, stableKey } from "./facebook.parser";
 import * as fs from "fs";
 import * as path from "path";
 
-const SESSION_FILE = path.join(__dirname, "../../..", "facebook-session.json");
+const SESSION_FILE = "facebook-session.json";
 
 // Normalises web.facebook.com → www.facebook.com so session cookies apply.
 // Also handles newline-separated URLs in case .env is misconfigured.
@@ -510,11 +509,6 @@ export class FacebookScraper extends BaseScraper {
 
       // Iterate every group in the same browser session
       for (let i = 0; i < DEFAULT_GROUP_URLS.length; i++) {
-        if (getStatus().stopRequested) {
-          logger.warn("[facebook] Stop requested — aborting group iteration");
-          break;
-        }
-
         const groupUrl = DEFAULT_GROUP_URLS[i];
         logger.info(`[facebook] ── Group ${i + 1}/${DEFAULT_GROUP_URLS.length}: ${groupUrl}`);
 
@@ -531,10 +525,6 @@ export class FacebookScraper extends BaseScraper {
 
         // Brief pause between groups to reduce rate-limit risk
         if (i < DEFAULT_GROUP_URLS.length - 1) {
-          if (getStatus().stopRequested) {
-            logger.warn("[facebook] Stop requested during inter-group pause");
-            break;
-          }
           const pause = 5000 + Math.random() * 4000;
           logger.info(`[facebook] Pausing ${Math.round(pause / 1000)}s before next group…`);
           await sleep(pause);

@@ -253,7 +253,7 @@ export interface BrowserHandle {
   close(): Promise<void>;
 }
 
-export async function createBrowser(proxyUrl?: string | null): Promise<BrowserHandle> {
+export async function createBrowser(proxyUrl?: string | null, headless: boolean = true): Promise<BrowserHandle> {
   const effectiveProxy = proxyUrl !== undefined ? proxyUrl : config.proxyUrl;
   const proxy = parseProxy(effectiveProxy);
 
@@ -264,7 +264,7 @@ export async function createBrowser(proxyUrl?: string | null): Promise<BrowserHa
   }
 
   const browser = await (chromium as any).launch({
-    headless: true,
+    headless: headless,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -273,7 +273,6 @@ export async function createBrowser(proxyUrl?: string | null): Promise<BrowserHa
       "--disable-infobars",
       "--disable-gpu",
       "--no-zygote",
-      "--single-process", 
       "--window-size=1440,900",
       "--start-maximized",
       "--disable-features=IsolateOrigins",

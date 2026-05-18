@@ -19,6 +19,8 @@ export interface ScraperOptions {
   maxListings?: number;
   /** Override the global proxy for this specific scraper */
   proxyUrl?: string | null;
+  /** Override headless mode for this specific scraper (default: true) */
+  headless?: boolean;
 }
 
 export abstract class BaseScraper {
@@ -34,8 +36,11 @@ export abstract class BaseScraper {
       maxPages: options.maxPages ?? config.maxPages,
       maxListings: options.maxListings ?? config.maxListings,
       proxyUrl: options.proxyUrl !== undefined ? options.proxyUrl : null,
+      headless: options.headless !== undefined ? options.headless : true,
     };
   }
+
+  protected headless: boolean = true;
 
   /**
    * Get the effective proxy for this scraper:
@@ -161,7 +166,7 @@ export abstract class BaseScraper {
     const rejected: Array<{ listing: RawListing; reason: string }> = [];
 
     const effectiveProxy = this.getEffectiveProxy();
-    const handle = await createBrowser(effectiveProxy);
+    const handle = await createBrowser(effectiveProxy, this.options.headless);
 
     try {
       for (let page = 1; page <= this.options.maxPages; page++) {

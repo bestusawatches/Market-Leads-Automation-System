@@ -75,6 +75,7 @@ export interface PropertyEstimate {
   source: string;
   value: number;
   fetchedAt: string;
+  sourceUrl?: string;
 }
 
 export interface Property {

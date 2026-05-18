@@ -13,9 +13,13 @@ interface UnifiedListing {
   estimatedArv?: number;
   arv?: number;
   zillowEstimate?: number;
+  zillowSourceUrl?: string;
   redfinEstimate?: number;
+  redfinSourceUrl?: string;
   propwireEstimate?: number;
+  propwireSourceUrl?: string;
   realtorEstimate?: number;
+  realtorSourceUrl?: string;
 }
 
 const calculateMedian = (values: number[]): number | undefined => {
@@ -76,9 +80,13 @@ export const PropertiesPage: React.FC = () => {
           estimatedArv,
           arv,
           zillowEstimate: property.estimates.find((e) => e.source === 'zillow')?.value,
+          zillowSourceUrl: property.estimates.find((e) => e.source === 'zillow')?.sourceUrl,
           redfinEstimate: property.estimates.find((e) => e.source === 'redfin')?.value,
+          redfinSourceUrl: property.estimates.find((e) => e.source === 'redfin')?.sourceUrl,
           propwireEstimate: property.estimates.find((e) => e.source === 'propwire')?.value,
+          propwireSourceUrl: property.estimates.find((e) => e.source === 'propwire')?.sourceUrl,
           realtorEstimate: property.estimates.find((e) => e.source === 'realtor')?.value,
+          realtorSourceUrl: property.estimates.find((e) => e.source === 'realtor')?.sourceUrl,
         });
       });
     });
@@ -219,10 +227,82 @@ export const PropertiesPage: React.FC = () => {
                             '—'
                           )}
                         </Td>
-                        <Td>{fmt(listing.zillowEstimate)}</Td>
-                        <Td>{fmt(listing.redfinEstimate)}</Td>
-                        <Td>{fmt(listing.propwireEstimate)}</Td>
-                        <Td>{fmt(listing.realtorEstimate)}</Td>
+                        <Td>
+                          {listing.zillowEstimate ? (
+                            listing.zillowSourceUrl ? (
+                              <a
+                                href={listing.zillowSourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-slate-500 hover:text-slate-900 underline underline-offset-2 text-sm font-medium transition-colors"
+                                title={listing.zillowSourceUrl}
+                              >
+                                {fmt(listing.zillowEstimate)}
+                              </a>
+                            ) : (
+                              fmt(listing.zillowEstimate)
+                            )
+                          ) : (
+                            '—'
+                          )}
+                        </Td>
+                        <Td>
+                          {listing.redfinEstimate ? (
+                            listing.redfinSourceUrl ? (
+                              <a
+                                href={listing.redfinSourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-slate-500 hover:text-slate-900 underline underline-offset-2 text-sm font-medium transition-colors"
+                                title={listing.redfinSourceUrl}
+                              >
+                                {fmt(listing.redfinEstimate)}
+                              </a>
+                            ) : (
+                              fmt(listing.redfinEstimate)
+                            )
+                          ) : (
+                            '—'
+                          )}
+                        </Td>
+                        <Td>
+                          {listing.propwireEstimate ? (
+                            listing.propwireSourceUrl ? (
+                              <a
+                                href={listing.propwireSourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-slate-500 hover:text-slate-900 underline underline-offset-2 text-sm font-medium transition-colors"
+                                title={listing.propwireSourceUrl}
+                              >
+                                {fmt(listing.propwireEstimate)}
+                              </a>
+                            ) : (
+                              fmt(listing.propwireEstimate)
+                            )
+                          ) : (
+                            '—'
+                          )}
+                        </Td>
+                        <Td>
+                          {listing.realtorEstimate ? (
+                            listing.realtorSourceUrl ? (
+                              <a
+                                href={listing.realtorSourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-slate-500 hover:text-slate-900 underline underline-offset-2 text-sm font-medium transition-colors"
+                                title={listing.realtorSourceUrl}
+                              >
+                                {fmt(listing.realtorEstimate)}
+                              </a>
+                            ) : (
+                              fmt(listing.realtorEstimate)
+                            )
+                          ) : (
+                            '—'
+                          )}
+                        </Td>
                         <Td>
                           {listing.url ? (
                             <a

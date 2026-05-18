@@ -39,7 +39,7 @@ export const config = {
 
   // ── Global scraping limits ────────────────────────────────────────────────
   maxPages:     Number(process.env.MAX_PAGES        ?? 10),
-  maxListings:  Number(process.env.MAX_LISTINGS     ?? 100),
+  maxListings:  Number(process.env.MAX_LISTINGS     ?? 10000),
   requestDelay: Number(process.env.REQUEST_DELAY_MS ?? 2_000),
 
   // ── Filtering criteria ────────────────────────────────────────────────────

@@ -785,8 +785,27 @@ export class RedfinScraper extends BaseScraper {
       )
     );
 
-    logger.info(`[redfin] Finished — ${this.results.length} listings`);
-    return this.results;
+    // ── Filter: Only return listings with zestimate (AVM estimate) ────────────
+
+    const withEstimate = this.results.filter(l => l.zestimate != null);
+    const withoutEstimate = this.results.filter(l => l.zestimate == null);
+
+    logger.info(
+      `[redfin] Final filter: ${withEstimate.length} with estimates, ` +
+      `${withoutEstimate.length} without estimates — returning only with estimates`
+    );
+
+    if (withoutEstimate.length > 0) {
+      logger.debug(
+        `[redfin] Dropped ${withoutEstimate.length} listing(s) without estimates:\n` +
+        withoutEstimate
+          .map(l => `  • ${l.address} ($${l.price?.toLocaleString()})`)
+          .join("\n")
+      );
+    }
+
+    logger.info(`[redfin] Finished — ${withEstimate.length} listings with estimates`);
+    return withEstimate;
   }
 
   protected async scrapePage(_h: any, _p: number): Promise<RawListing[]> {

@@ -8,8 +8,8 @@ import { setRunning, setProgress, getStatus } from "./scrape/status";
 
 // ── Underwriting engine ───────────────────────────────────────────────────────
 
-function scoreListings(listings: RawListing[]): ListingUpsertPayload[] {
-  return listings.map((listing): ListingUpsertPayload => {
+function scoreListings(listings: RawListing[]): Array<ListingUpsertPayload & { estimate?: number }> {
+  return listings.map((listing): ListingUpsertPayload & { estimate?: number } => {
     const arv = listing.zestimate ?? listing.price;
     let dealScore: DealScore = "low_potential";
     let equityEstimate: number | undefined;
@@ -21,7 +21,7 @@ function scoreListings(listings: RawListing[]): ListingUpsertPayload[] {
       else if (ratio <= 0.85) dealScore = "average_deal";
     }
 
-    return { ...listing, dealScore, equityEstimate };
+    return { ...listing, dealScore, equityEstimate, estimate: listing.zestimate };
   });
 }
 

@@ -160,7 +160,7 @@ export const config = {
 
       pageSize:          Number(process.env.REDFIN_PAGE_SIZE    ?? 50),
       maxPagesPerMarket: Number(process.env.REDFIN_MAX_PAGES    ?? 5),
-      detailFetchLimit:  Number(process.env.REDFIN_DETAIL_LIMIT ?? 10),
+      detailFetchLimit:  Number(process.env.REDFIN_DETAIL_LIMIT ?? 10000),
     },
 
     crexi: {

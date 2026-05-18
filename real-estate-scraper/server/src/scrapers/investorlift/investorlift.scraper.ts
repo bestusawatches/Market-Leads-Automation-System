@@ -15,6 +15,16 @@ export class InvestorLiftScraper extends BaseScraper {
     super(options);
   }
 
+  /**
+   * InvestorLift blocks proxy headers (X-Forwarded-For, Via, etc.)
+   * and returns blank pages or empty API responses when detected.
+   * Bypass the proxy entirely and connect directly.
+   */
+  protected getEffectiveProxy(): string | null {
+    logger.info(`[investorlift] Proxy explicitly disabled — connecting direct to bypass proxy header detection`);
+    return null;
+  }
+
   protected async scrapePage(
     handle: BrowserHandle,
     pageNumber: number,

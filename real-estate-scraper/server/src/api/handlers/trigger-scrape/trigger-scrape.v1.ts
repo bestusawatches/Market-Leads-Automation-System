@@ -1,17 +1,16 @@
 import { Request, Response, NextFunction } from "express";
-import { spawn } from "child_process";
-import { resolveSourceKeys } from "../../../scrapers/registry";
+import { SCRAPER_REGISTRY, resolveSourceKeys } from "../../../scrapers/registry";
+import { runScrapers } from "../../../runner";
 import { logger } from "../../../utils/logger";
+import { initializeProxyRotator } from "../../../utils/proxy-rotator";
+import { config } from "../../../config";
 
 /**
  * Trigger all scrapers (equivalent to npm run scrape:all)
  * @route POST /api/v1/scrape/trigger
  * @param {string} [source=all] - Optional source to scrape (all, specific source, or comma-separated list)
  * @returns {Object} { status, message, scrapingStartedAt }
- *
- * IMPORTANT: Spawns as a separate child process to avoid OOM kills.
- * The server (512MB) and scraper (with Chromium) each get their own heap.
- */
+*/
 
 export const triggerScrapeHandler = async (
   req: Request,
@@ -20,8 +19,19 @@ export const triggerScrapeHandler = async (
 ) => {
   try {
     const source = (req.body.source || req.query.source || "all") as string;
-
+    
     logger.info(`[POST /scrape/trigger] Scrape request received for source(s): ${source}`);
+
+    // Initialize proxy rotator with configured proxies
+    if (config.proxyUrls && config.proxyUrls.length > 0) {
+      initializeProxyRotator(config.proxyUrls);
+    } else if (config.proxyUrl) {
+      // Fallback to legacy single proxy mode
+      initializeProxyRotator([config.proxyUrl]);
+    } else {
+      // No proxies configured, initialize with empty list
+      initializeProxyRotator([]);
+    }
 
     // Resolve source keys
     let sourceKeys: string[];
@@ -41,40 +51,24 @@ export const triggerScrapeHandler = async (
 
     const scrapingStartedAt = new Date().toISOString();
 
-    // ── Spawn as separate child process to avoid OOM ──────────────────────
-    // The scraper (Chromium + browser) runs in its own heap (400MB).
-    // The Express server keeps its own 512MB separate.
-    // This prevents the OOM killer from terminating the entire container.
-    const child = spawn(
-      "node",
-      [
-        "--max-old-space-size=400",
-        "-r",
-        "./polyfill-file.js",
-        "-r",
-        "ts-node/register",
-        "index.ts",
-        "--source",
-        sourceKeys.join(","),
-      ],
-      {
-        detached: true,                    // allow child to outlive parent
-        stdio: "inherit",                  // inherit stdout/stderr (Render sees child logs)
-        env: process.env,                  // pass environment (including .env vars)
-      }
-    );
-
-    child.unref();                         // don't block server shutdown on child
-    logger.info(`[POST /scrape/trigger] Spawned scraper as child process (PID: ${child.pid})`);
+    // Start scraping in background (non-blocking)
+    runScrapers({ sourceKeys, factories: SCRAPER_REGISTRY })
+      .then(() => {
+        logger.info(
+          `[POST /scrape/trigger] Scraping completed for sources: ${sourceKeys.join(", ")}`
+        );
+      })
+      .catch((err) => {
+        logger.error(`[POST /scrape/trigger] Scraping failed:`, err);
+      });
 
     // Respond immediately
     res.status(202).json({
       status: "ok",
-      message: `Scraping started for sources: ${sourceKeys.join(", ")} in detached process`,
+      message: `Scraping started for sources: ${sourceKeys.join(", ")}`,
       data: {
         sources: sourceKeys,
         scrapingStartedAt,
-        childPid: child.pid,
       },
     });
   } catch (error) {
